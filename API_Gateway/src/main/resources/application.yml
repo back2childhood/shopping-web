@@ -1,0 +1,35 @@
+# application.yml
+server:
+  port: 8080
+
+spring:
+  application:
+    name: API-GATEWAY
+  cloud:
+    gateway:
+      server:
+        webflux:
+          routes:
+            - id: ACCOUNT-SERVICE
+              uri: lb://ACCOUNT-SERVICE
+              predicates:
+                - Path=/api/accounts/**
+
+            - id: item-service
+              uri: lb://item-service
+              predicates:
+                - Path=/api/items/**
+
+            - id: auth-service
+              uri: lb://auth-service
+              predicates:
+                - Path=/api/auth/**
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+
+auth:
+  jwt:
+    secret: mySuperSecretKey
