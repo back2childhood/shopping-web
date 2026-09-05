@@ -5,6 +5,7 @@ import com.shopping.ItemService.payload.ItemResponseDto;
 import com.shopping.ItemService.service.ItemService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.Valid;
 
 import java.util.List;
 import java.util.Map;
@@ -21,7 +22,7 @@ public class ItemController {
     }
 
     @PostMapping
-    public ItemResponseDto createItem(@RequestBody ItemRequestDto item) {
+    public ItemResponseDto createItem(@Valid @RequestBody ItemRequestDto item) {
         return itemService.createItem(item);
     }
 

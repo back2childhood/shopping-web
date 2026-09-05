@@ -6,6 +6,7 @@ import com.shopping.AccountService.service.AccountService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.Valid;
 
 import java.util.List;
 
@@ -20,7 +21,7 @@ public class AccountController {
     }
 
     @PostMapping
-    public ResponseEntity<AccountResponseDto> createAccount(@RequestBody AccountRequestDto accountDto) {
+    public ResponseEntity<AccountResponseDto> createAccount(@Valid @RequestBody AccountRequestDto accountDto) {
         return ResponseEntity.ok(accountService.createAccount(accountDto));
     }
 

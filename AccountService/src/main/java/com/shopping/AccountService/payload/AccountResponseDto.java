@@ -15,7 +15,6 @@ public class AccountResponseDto {
     private String username;
     private String shippingAddress;
     private String billingAddress;
-    private Integer paymentMethod;
     private Boolean isSeller;
     private LocalDateTime createdAt;
 }

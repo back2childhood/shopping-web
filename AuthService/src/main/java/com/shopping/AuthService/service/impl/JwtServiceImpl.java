@@ -50,7 +50,7 @@ public class JwtServiceImpl implements JwtService {
 
         return Jwts.builder()
                 .issuer("auth-server")
-                .subject("user")
+                .subject(user.getEmail())
                 .claims(inputClaims)
                 .audience().add("api-client").and()
                 .issuedAt(new Date())

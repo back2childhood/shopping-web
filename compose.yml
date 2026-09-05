@@ -1,0 +1,250 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: shopping
+      POSTGRES_USER: shopping
+      POSTGRES_PASSWORD: shopping
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopping -d shopping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - shopping-net
+
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - shopping-net
+
+  cassandra:
+    image: cassandra:4.1
+    environment:
+      CASSANDRA_CLUSTER_NAME: ShoppingCluster
+      CASSANDRA_DC: datacenter1
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 100M
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE CLUSTER'"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    networks:
+      - shopping-net
+
+  cassandra-init:
+    image: cassandra:4.1
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./docker/cassandra/init.cql:/scripts/init.cql:ro
+    command: ["cqlsh", "cassandra", "-f", "/scripts/init.cql"]
+    restart: "no"
+    networks:
+      - shopping-net
+
+  eureka-server:
+    build:
+      context: .
+      dockerfile: EurekaServer/Dockerfile
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/8761'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks:
+      - shopping-net
+
+  account-service:
+    build:
+      context: .
+      dockerfile: AccountService/Dockerfile
+    environment: &postgres-environment
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/shopping?currentSchema=account_service
+      SPRING_DATASOURCE_USERNAME: shopping
+      SPRING_DATASOURCE_PASSWORD: shopping
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      EUREKA_INSTANCE_HOSTNAME: account-service
+      EUREKA_INSTANCE_ID: account-service
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/8081'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks:
+      - shopping-net
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: AuthService/Dockerfile
+    environment:
+      <<: *postgres-environment
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/shopping?currentSchema=auth_service
+      EUREKA_INSTANCE_HOSTNAME: auth-service
+      EUREKA_INSTANCE_ID: auth-service
+      JWT_SECRET: ${JWT_SECRET:-UnI6T1JQdWdJYW1lcDJjdmlOTThMc0ZpbDJwY3N3SFJ6aEhTS2FKQ3BaYz0=}
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      account-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/8082'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks:
+      - shopping-net
+
+  item-service:
+    build:
+      context: .
+      dockerfile: ItemService/Dockerfile
+    environment:
+      <<: *postgres-environment
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/shopping?currentSchema=inventory_service
+      EUREKA_INSTANCE_HOSTNAME: item-service
+      EUREKA_INSTANCE_ID: item-service
+      CASSANDRA_CONTACT_POINTS: cassandra
+      REDIS_HOST: redis
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
+      eureka-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/8083'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    networks:
+      - shopping-net
+
+  order-service:
+    build:
+      context: .
+      dockerfile: OrderService/Dockerfile
+    environment:
+      <<: *postgres-environment
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/shopping?currentSchema=order_service
+      EUREKA_INSTANCE_HOSTNAME: order-service
+      EUREKA_INSTANCE_ID: order-service
+      REDIS_HOST: redis
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      item-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/8084'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks:
+      - shopping-net
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: API_Gateway/Dockerfile
+    environment:
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      EUREKA_INSTANCE_HOSTNAME: api-gateway
+      EUREKA_INSTANCE_ID: api-gateway
+      JWT_SECRET: ${JWT_SECRET:-UnI6T1JQdWdJYW1lcDJjdmlOTThMc0ZpbDJwY3N3SFJ6aEhTS2FKQ3BaYz0=}
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      eureka-server:
+        condition: service_healthy
+      account-service:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      item-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/8080'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    networks:
+      - shopping-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:${GATEWAY_PORT:-8080}
+    ports:
+      - "3000:3000"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    networks:
+      - shopping-net
+
+networks:
+  shopping-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  cassandra-data:

@@ -1,14 +1,15 @@
 package com.shopping.ItemService.entity;
 
-import jakarta.persistence.*;
+import org.springframework.data.annotation.Id;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import org.bson.types.ObjectId;
-import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.cassandra.core.mapping.Table;
+import java.math.BigDecimal;
+import java.time.Instant;
 
-@Document(collection = "items")
+@Table("items_by_id")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -18,6 +19,8 @@ public class Item {
     private String id;
     private String name;
     private String description;
-    private Double price;
-    private Integer stock;
+    private BigDecimal price;
+    private String currency;
+    private Instant createdAt;
+    private Instant updatedAt;
 }

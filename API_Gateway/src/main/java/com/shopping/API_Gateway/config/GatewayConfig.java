@@ -5,6 +5,11 @@ import org.springframework.cloud.gateway.route.RouteLocator;
 import org.springframework.cloud.gateway.route.builder.RouteLocatorBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.reactive.CorsWebFilter;
+import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
+
+import java.util.List;
 
 @Configuration
 public class GatewayConfig {
@@ -20,6 +25,29 @@ public class GatewayConfig {
                         .uri("lb://ITEM-SERVICE"))
                 .route("auth-service", r -> r.path("/api/auth/**")
                         .uri("lb://AUTH-SERVICE"))
+                .route("order-service", r -> r.path("/api/orders/**")
+                        .filters(f -> f.filter(authFilter.apply(new AuthenticationFilter.Config())))
+                        .uri("lb://ORDER-SERVICE"))
                 .build();
+    }
+
+    @Bean
+    public org.springframework.security.web.server.SecurityWebFilterChain securityWebFilterChain(
+            org.springframework.security.config.web.server.ServerHttpSecurity http) {
+        return http.csrf(org.springframework.security.config.web.server.ServerHttpSecurity.CsrfSpec::disable)
+                .authorizeExchange(exchange -> exchange.anyExchange().permitAll())
+                .build();
+    }
+
+    @Bean
+    public CorsWebFilter corsWebFilter() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOrigins(List.of("http://localhost:3000"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return new CorsWebFilter(source);
     }
 }

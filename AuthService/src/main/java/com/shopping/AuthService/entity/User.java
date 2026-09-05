@@ -2,7 +2,6 @@ package com.shopping.AuthService.entity;
 
 
 import jakarta.persistence.*;
-import jdk.jfr.Description;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -18,16 +17,11 @@ public class User {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(unique = true)
+    @Column(nullable = false, unique = true)
     private String email;
 
-    private String username;
+    @Column(nullable = false)
     private String password;
-
-    private String shippingAddress;
-    private String billingAddress;
-    @Description("1 - credit card, 2 - debit card, 3 - paypal")
-    private Integer paymentMethod;
-
+    @Column(nullable = false)
     private Boolean isSeller;
 }
