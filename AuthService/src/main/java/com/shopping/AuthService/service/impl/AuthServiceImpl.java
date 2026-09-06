@@ -3,6 +3,7 @@ package com.shopping.AuthService.service.impl;
 import com.shopping.AuthService.dao.UserRepository;
 import com.shopping.AuthService.entity.User;
 import com.shopping.AuthService.payload.AccountRequestDto;
+import com.shopping.AuthService.payload.AccountResponseDto;
 import com.shopping.AuthService.payload.AuthResponse;
 import com.shopping.AuthService.payload.LoginRequest;
 import com.shopping.AuthService.payload.RegisterRequest;
@@ -15,6 +16,9 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.Locale;
 
 @Service
 public class AuthServiceImpl implements AuthService {
@@ -38,28 +42,30 @@ public class AuthServiceImpl implements AuthService {
         this.modelMapper = modelMapper;
     }
 
+    @Transactional
     public AuthResponse register(RegisterRequest request) {
-        if (userRepository.findByEmail(request.getEmail()).isPresent()) {
+        String normalizedEmail = request.getEmail().trim().toLowerCase(Locale.ROOT);
+        if (userRepository.findByEmail(normalizedEmail).isPresent()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Email is already registered");
         }
+
+        AccountRequestDto accountDTO = modelMapper.map(request, AccountRequestDto.class);
+        accountDTO.setEmail(normalizedEmail);
+        AccountResponseDto account = accountClient.createAccount(accountDTO);
+
         User user = new User();
-        user.setEmail(request.getEmail());
-        user.setIsSeller(Boolean.TRUE.equals(request.getIsSeller()));
+        user.setId(account.getId());
+        user.setEmail(normalizedEmail);
+        user.setIsSeller(Boolean.TRUE.equals(account.getIsSeller()));
         user.setPassword(passwordEncoder.encode(request.getPassword()));
         user = userRepository.save(user);
 
-        // Build account data to send to AccountService
-        AccountRequestDto accountDTO = modelMapper.map(request, AccountRequestDto.class);
-
-        accountClient.createAccount(accountDTO);
-
-
         String token = jwtService.generateToken(user);
-        return new AuthResponse(token, user.getId(), user.getIsSeller());
+        return toAuthResponse(user, token);
     }
 
     public AuthResponse login(LoginRequest request) {
-        User user = userRepository.findByEmail(request.getEmail())
+        User user = userRepository.findByEmail(request.getEmail().trim().toLowerCase(Locale.ROOT))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials"));
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
@@ -67,6 +73,11 @@ public class AuthServiceImpl implements AuthService {
         }
 
         String token = jwtService.generateToken(user);
-        return new AuthResponse(token, user.getId(), user.getIsSeller());
+        return toAuthResponse(user, token);
+    }
+
+    private AuthResponse toAuthResponse(User user, String token) {
+        String role = Boolean.TRUE.equals(user.getIsSeller()) ? "SELLER" : "BUYER";
+        return new AuthResponse(token, user.getId(), user.getEmail(), role, user.getIsSeller());
     }
 }

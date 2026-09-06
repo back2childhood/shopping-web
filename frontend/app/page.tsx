@@ -5,6 +5,8 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 type AuthSession = {
   token: string;
   userId: number;
+  email: string;
+  role: 'SELLER' | 'BUYER';
   isSeller: boolean;
 };
 
@@ -181,7 +183,7 @@ function AuthPage({ onAuthenticated }: { onAuthenticated: (session: AuthSession)
   );
 }
 
-function PageHeader({ title, label, onLogout }: { title: string; label: string; onLogout: () => void }) {
+function PageHeader({ title, label, email, onLogout }: { title: string; label: string; email: string; onLogout: () => void }) {
   return (
     <header className="app-header">
       <div>
@@ -189,6 +191,7 @@ function PageHeader({ title, label, onLogout }: { title: string; label: string; 
         <p className="workspace-label">{label}</p>
       </div>
       <div className="header-actions">
+        <span className="muted">{email}</span>
         <span className="status-pill"><i /> Services connected</span>
         <button className="secondary-button" onClick={onLogout}>Sign out</button>
       </div>
@@ -247,7 +250,7 @@ function SellerPage({ session, onLogout }: { session: AuthSession; onLogout: () 
 
   return (
     <main className="app-shell">
-      <PageHeader title="Catalog management" label="Seller workspace" onLogout={onLogout} />
+      <PageHeader title="Catalog management" label="Seller workspace" email={session.email} onLogout={onLogout} />
       <section className="metric-strip">
         <div><span>Products</span><strong>{items.length}</strong></div>
         <div><span>Units available</span><strong>{items.reduce((sum, item) => sum + item.stock, 0)}</strong></div>
@@ -321,7 +324,7 @@ function ShopPage({ session, onLogout }: { session: AuthSession; onLogout: () =>
 
   return (
     <main className="app-shell">
-      <PageHeader title="Thoughtful goods, ready to ship." label="Customer shop" onLogout={onLogout} />
+      <PageHeader title="Thoughtful goods, ready to ship." label="Customer shop" email={session.email} onLogout={onLogout} />
       <div className="shop-grid">
         <section className="catalog-surface">
           <div className="section-heading">

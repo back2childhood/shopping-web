@@ -145,6 +145,8 @@ services:
       EUREKA_INSTANCE_ID: item-service
       CASSANDRA_CONTACT_POINTS: cassandra
       REDIS_HOST: redis
+      JWT_SECRET: ${JWT_SECRET:-UnI6T1JQdWdJYW1lcDJjdmlOTThMc0ZpbDJwY3N3SFJ6aEhTS2FKQ3BaYz0=}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-order-service-token-change-me}
     ports:
       - "8083:8083"
     depends_on:
@@ -175,6 +177,7 @@ services:
       EUREKA_INSTANCE_HOSTNAME: order-service
       EUREKA_INSTANCE_ID: order-service
       REDIS_HOST: redis
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-order-service-token-change-me}
     ports:
       - "8084:8084"
     depends_on:

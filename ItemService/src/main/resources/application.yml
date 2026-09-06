@@ -25,6 +25,13 @@ spring:
   cache:
     type: redis
 
+auth:
+  jwt:
+    secret: ${JWT_SECRET:UnI6T1JQdWdJYW1lcDJjdmlOTThMc0ZpbDJwY3N3SFJ6aEhTS2FKQ3BaYz0=}
+
+security:
+  internal-service-token: ${INTERNAL_SERVICE_TOKEN:local-order-service-token-change-me}
+
 eureka:
   instance:
     hostname: ${EUREKA_INSTANCE_HOSTNAME:localhost}

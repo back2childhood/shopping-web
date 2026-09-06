@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Collectors;
 
 @Service
@@ -27,10 +28,16 @@ public class AccountServiceImpl implements AccountService {
 
     @Override
     public AccountResponseDto createAccount(AccountRequestDto dto) {
+        String normalizedEmail = dto.getEmail().trim().toLowerCase(Locale.ROOT);
+        Account existing = accountRepository.findByEmail(normalizedEmail).orElse(null);
+        if (existing != null) {
+            return toResponse(existing);
+        }
         Account account = modelMapper.map(dto, Account.class);
+        account.setEmail(normalizedEmail);
         account.setSeller(Boolean.TRUE.equals(dto.getIsSeller()));
         Account saved = accountRepository.save(account);
-        return modelMapper.map(saved, AccountResponseDto.class);
+        return toResponse(saved);
     }
 
     @Override
@@ -43,21 +50,21 @@ public class AccountServiceImpl implements AccountService {
         existing.setEmail(dto.getEmail());
         existing.setSeller(Boolean.TRUE.equals(dto.getIsSeller()));
         Account updated = accountRepository.save(existing);
-        return modelMapper.map(updated, AccountResponseDto.class);
+        return toResponse(updated);
     }
 
     @Override
     public AccountResponseDto getAccountById(Long id) {
         Account account = accountRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Account not found"));
-        return modelMapper.map(account, AccountResponseDto.class);
+        return toResponse(account);
     }
 
     @Override
     public List<AccountResponseDto> getAllAccounts() {
         return accountRepository.findAll()
                 .stream()
-                .map(a -> modelMapper.map(a, AccountResponseDto.class))
+                .map(this::toResponse)
                 .collect(Collectors.toList());
     }
 
@@ -67,5 +74,11 @@ public class AccountServiceImpl implements AccountService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Account not found");
         }
         accountRepository.deleteById(id);
+    }
+
+    private AccountResponseDto toResponse(Account account) {
+        AccountResponseDto response = modelMapper.map(account, AccountResponseDto.class);
+        response.setIsSeller(account.isSeller());
+        return response;
     }
 }

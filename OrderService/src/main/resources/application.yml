@@ -19,6 +19,9 @@ spring:
   cache:
     type: redis
 
+security:
+  internal-service-token: ${INTERNAL_SERVICE_TOKEN:local-order-service-token-change-me}
+
 eureka:
   instance:
     hostname: ${EUREKA_INSTANCE_HOSTNAME:localhost}

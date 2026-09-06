@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-截至 2026-09-04，六个后端模块、前端和三种数据基础设施可以一起构建和启动。已经实际验证以下链路：卖家注册并创建商品，买家登录并创建订单，订单从 PostgreSQL 写入后可连续从 Redis 缓存读取，库存通过 PostgreSQL 条件更新安全扣减。
+截至 2026-09-06，六个后端模块、前端和三种数据基础设施可以一起构建和启动。已经实际验证以下链路：AccountService 生成全局用户 ID，AuthService 用同一个 ID 保存认证记录并签发带角色的 JWT，卖家可以创建商品、买家不能创建商品，买家可以读取商品并通过 OrderService 的受认证内部调用预留库存和创建订单。
 
 项目统一使用 Java 17、Maven 3.9.11 Wrapper、Spring Boot 3.5.7 和 Spring Cloud 2025.0.1。根 POM 只聚合当前 MVP 所需的六个模块，旧的 Cart、Payment、Notification 和 Common 代码仍保留在仓库中，但不参与本次构建或 Compose 启动。
 
@@ -39,15 +39,17 @@ flowchart LR
 | --- | --- | --- | --- |
 | API Gateway | 统一入口、CORS、JWT 校验、按服务名转发 | 无 | Eureka |
 | EurekaServer | 服务注册与发现 | 无 | 无 |
-| AuthService | 注册、登录、BCrypt 密码散列、签发 JWT | PostgreSQL `auth_service` | AccountService、Eureka |
-| AccountService | 保存不含密码的用户资料与卖家身份 | PostgreSQL `account_service` | Eureka |
-| ItemService | 商品目录 CRUD 与库存预留/释放 | Cassandra `shopping_catalog`、PostgreSQL `inventory_service` | Redis、Eureka |
+| AuthService | 注册、登录、BCrypt 密码散列、复用全局用户 ID、签发 JWT | PostgreSQL `auth_service` | AccountService、Eureka |
+| AccountService | 保存不含密码的用户资料，并作为当前系统用户 ID 的生成方 | PostgreSQL `account_service` | Eureka |
+| ItemService | 商品目录 CRUD、SELLER 写权限与库存预留/释放 | Cassandra `shopping_catalog`、PostgreSQL `inventory_service` | Redis、Eureka |
 | OrderService | 创建订单、保存价格快照、查询用户订单 | PostgreSQL `order_service` | ItemService、Redis、Eureka |
 | frontend | 登录/注册、按角色分流、卖家商品管理、买家购物 | 浏览器状态 | API Gateway |
 
 ### 请求链路
 
-注册时，AuthService 先创建认证凭据，并同步调用 AccountService 创建公开资料；返回值包含 JWT、用户 ID 和 `isSeller`。前端根据 `isSeller` 将卖家送到管理视图，将普通用户送到购物视图。
+注册时，AuthService 通过 OpenFeign 同步调用 AccountService 创建公开资料，AccountService 的 PostgreSQL identity 生成当前系统的全局 `userId`。AuthService 随后用这个 ID 保存密码散列和角色，因此两个服务不会各自生成互不相干的用户 ID；AccountService 按规范化邮箱幂等返回已有账户，使网络重试能够复用同一 ID。注册和登录响应包含 JWT、`userId`、`email`、`role` 和 `isSeller`，前端因此可以立即显示用户信息，并把卖家送到管理视图、把普通用户送到购物视图。
+
+JWT 的 `sub` 是全局 `userId`，并包含 `id`、`email` 和 `roles` claims；当前角色为 `SELLER` 或 `BUYER`。ItemService 会自行校验 JWT 的签名和过期时间，并在服务端限制商品 create/update/delete 只能由 SELLER 执行。库存预留与释放只接受 OrderService 通过 OpenFeign 附带的内部服务凭证，普通用户 token 不能直接调用库存写接口；这个共享凭证是本地 MVP 的过渡方案，生产环境应替换为 mTLS、短期 service token 或 OAuth2 client credentials。
 
 下单时，OrderService 不信任浏览器提交的价格，而是向 ItemService 读取商品名称、价格和币种。ItemService 用一条带 `available_quantity >= quantity` 条件的 PostgreSQL 更新语句预留库存，因此两个请求并发购买最后一件商品时，只有一个更新能够成功。OrderService 随后保存订单及商品快照，并把查询响应缓存到 Redis；如果保存阶段抛出异常，会尽力调用 ItemService 释放已经预留的库存。
 
@@ -61,7 +63,7 @@ flowchart LR
 
 | 字段 | 类型/约束 | 用途 |
 | --- | --- | --- |
-| `id` | bigint, PK, identity | 认证用户 ID |
+| `id` | bigint, PK | 与 AccountService 相同的全局用户 ID，不在 AuthService 再次生成 |
 | `email` | varchar, NOT NULL, UNIQUE | 登录名 |
 | `password` | varchar, NOT NULL | BCrypt hash，不保存明文 |
 | `is_seller` | boolean, NOT NULL | 前端角色分流依据 |
@@ -132,18 +134,18 @@ flowchart LR
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| POST | `/api/auth/register` | 注册并返回 token、userId、isSeller |
-| POST | `/api/auth/login` | 登录并返回 token、userId、isSeller |
+| POST | `/api/auth/register` | 注册并返回 token、userId、email、role、isSeller |
+| POST | `/api/auth/login` | 登录并返回 token、userId、email、role、isSeller |
 | POST | `/api/accounts` | 创建账户资料，通常由 AuthService 调用 |
 | GET | `/api/accounts/{id}` | 查询账户资料 |
 | GET | `/api/accounts` | 查询全部账户 |
-| POST | `/api/items` | 创建商品及初始库存 |
+| POST | `/api/items` | SELLER 创建商品及初始库存 |
 | GET | `/api/items/{id}` | 查询商品与当前库存 |
 | GET | `/api/items` | 查询商品列表 |
-| PUT | `/api/items/{id}` | 更新商品及库存 |
-| DELETE | `/api/items/{id}` | 删除商品及库存 |
-| POST | `/api/items/{id}/decrease-stock` | 原子预留库存 |
-| POST | `/api/items/{id}/increase-stock` | 释放库存 |
+| PUT | `/api/items/{id}` | SELLER 更新商品及库存 |
+| DELETE | `/api/items/{id}` | SELLER 删除商品及库存 |
+| POST | `/api/items/{id}/decrease-stock` | OrderService 内部调用，原子预留库存 |
+| POST | `/api/items/{id}/increase-stock` | OrderService 内部调用，释放库存 |
 | POST | `/api/orders` | 创建订单 |
 | GET | `/api/orders/{orderId}` | 查询订单，可命中 Redis |
 | GET | `/api/orders/user/{userId}` | 查询用户订单 |
@@ -208,12 +210,13 @@ npm run dev
 
 ## 已验证内容
 
-- Maven 六模块 reactor 测试通过。
+- Maven 六模块 reactor 测试通过；新增测试覆盖全局 ID 复用、JWT claims、SELLER 角色解析和 OrderService 内部身份解析。
 - 前端 lint 和生产构建通过。
 - 七个应用镜像均成功构建。
 - PostgreSQL、Redis、Cassandra 与 Eureka 健康检查通过。
 - 前端和网关健康接口返回 HTTP 200。
-- 卖家注册、商品创建、买家登录、JWT 网关鉴权和订单创建通过。
+- 已通过数据库联表验证 AccountService 与 AuthService 的用户 ID、邮箱和角色一致。
+- 卖家创建商品返回 HTTP 200，买家创建商品返回 HTTP 403，买家读取商品与创建订单返回 HTTP 200。
 - 同一商品列表和同一订单连续读取两次成功；已修复 Redis 的旧缓存隔离，以及订单对 `Instant` 和 `BigDecimal` 的序列化/反序列化问题。
 - 下单后 PostgreSQL 库存按请求数量扣减；条件更新防止库存变成负数。
 
@@ -223,16 +226,17 @@ npm run dev
 
 ### 高优先级：身份与授权
 
-- 网关目前只验证 JWT 是否有效，没有把经过验证的 userId 和角色作为可信身份传给下游。OrderService 仍接受请求体中的 `userId`，攻击者可以替其他用户下单或读取 `/api/orders/user/{userId}`。
-- 前端的卖家/买家分流只是用户体验，不是服务端授权。ItemService 的创建、修改、删除接口必须增加 seller 权限检查，账户列表也不应向普通用户开放。
-- 业务服务端口当前映射到宿主机，开发环境可以绕过网关直接访问。生产部署应只公开网关，并采用内部网络策略、服务间认证或 mTLS。
-- 默认 JWT secret 只适合本地演示。部署时必须通过安全环境变量或 secret manager 提供独立高强度密钥，并增加 token 过期、刷新和撤销策略。
+- ItemService 已在服务端执行 SELLER 写权限检查，但网关目前只校验 JWT 的签名和过期时间，还没有强制校验 `issuer=auth-server` 与 `audience=api-client`。issuer 可以阻止其他环境或其他认证系统签发的 token 被误用，audience 可以阻止原本签给另一个客户端或 API 的 token 被本系统接受；这是防止 token confusion 和跨环境误用的纵深防御，按当前迭代决定暂留 TODO。
+- OrderService 仍接受请求体中的 `userId`，攻击者可以替其他用户下单或读取 `/api/orders/user/{userId}`。下一步应让网关移除任何客户端伪造的身份头，从已验证 JWT 提取 `sub` 和角色写入内部可信 header，并让 OrderService 只使用该身份。
+- AccountService 的创建和列表接口尚未区分内部调用与普通用户，业务服务端口也映射到宿主机。生产部署应只公开网关，并对内部路由采用网络策略和服务身份验证。
+- OrderService 到 ItemService 当前使用本地共享服务凭证，能防止浏览器直接调用库存接口，但不能作为完整生产服务身份方案。部署时应改用 mTLS、短期签名 service token 或 OAuth2 client credentials，并由 secret manager 管理凭证。
+- 默认 JWT secret 和内部服务凭证只适合本地演示。部署时必须通过安全环境变量或 secret manager 提供独立高强度密钥，并增加 access token 短过期、refresh token 和撤销策略。
 
 ### 高优先级：跨服务一致性
 
 - PostgreSQL 的原子条件更新解决了“多用户购买最后一件商品”的超卖问题，但库存预留和订单写入仍属于两个服务的两个本地事务。当前异常路径会同步补偿库存，却无法覆盖进程在两次调用之间崩溃、网络超时后结果未知、补偿调用失败等情况。
 - 下一阶段应给库存预留增加 `reservationId` 和幂等约束，建立 `RESERVED / CONFIRMED / RELEASED / EXPIRED` 状态与过期释放机制。OrderService 可采用 transactional outbox 发布订单事件，再由 Saga 协调确认或释放库存。
-- AuthService 创建凭据后再同步创建账户资料也存在相同的半成功窗口。可先用明确的补偿和幂等注册修复，再在需要时引入 outbox/Saga；不应为了面试展示而直接加入尚未正确使用的 Kafka。
+- AuthService 先同步创建账户资料，再写入本地认证记录；AccountService 已按邮箱提供重试幂等性，但 AuthService 在后续写入前崩溃仍会留下没有凭据的账户资料，并发同邮箱请求也仍需处理唯一约束冲突。后续应加入注册幂等键、明确的 `PENDING/ACTIVE` 注册状态和 reconciliation，不应为了面试展示而直接加入尚未正确使用的 Kafka。
 
 ### 商品与缓存
 
@@ -258,4 +262,4 @@ npm run dev
 
 ## 推荐的下一步顺序
 
-第一步应补齐服务端授权，让用户身份来自经过网关验证的 token，并限制卖家接口。第二步为下单加入幂等 key 和库存 reservation 模型，同时编写并发测试证明不会超卖。第三步再加入支付和取消状态机；只有事件契约、幂等、outbox 和失败恢复方案明确后，才引入 Kafka。这个顺序能让项目在每个阶段都可运行、可解释，也更符合面试中对工程判断的期待。
+下一步应把订单身份改为只信任经过验证的 JWT `sub`，不能继续相信请求体中的 `userId`；同一阶段可以补上网关的可信身份 header 和下游 header 防伪。随后为下单加入幂等 key 和库存 reservation 模型，并编写并发测试证明不会超卖。再下一阶段加入支付和取消状态机；只有事件契约、幂等、outbox 和失败恢复方案明确后，才引入 Kafka。这个顺序能让项目在每个阶段都可运行、可解释，也更符合真实工程环境。
