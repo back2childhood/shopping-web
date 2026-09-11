@@ -1,49 +1,32 @@
 package com.shopping.ItemService.event;
 
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
-import lombok.Getter;
 import lombok.NoArgsConstructor;
 
-import java.util.List;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.UUID;
 
 @Data
+@Builder
 @NoArgsConstructor
 @AllArgsConstructor
-//@Setter
-@Getter
 public class Event {
+    private UUID eventId;
     private String topic;
-    private Long orderId;
+    private String eventType;
+    private Integer schemaVersion;
+    private String aggregateId;
+    private Long aggregateVersion;
     private Long userId;
-    private List<ItemQuantity> items;
-
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
-    public static class ItemQuantity {
-        private String itemId;
-        private double price;
-        private Integer quantity;
-    }
-
-    public Event setTopic(String topic) {
-        this.topic = topic;
-        return this;
-    }
-
-    public Event setOrderId(Long orderId) {
-        this.orderId = orderId;
-        return this;
-    }
-
-    public Event setUserId(Long userId) {
-        this.userId = userId;
-        return this;
-    }
-
-    public Event setItems(List<ItemQuantity> items) {
-        this.items = items;
-        return this;
-    }
+    private String name;
+    private String description;
+    private BigDecimal price;
+    private String currency;
+    private Integer availableQuantity;
+    private Instant createdAt;
+    private Instant updatedAt;
+    private Instant occurredAt;
 }

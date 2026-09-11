@@ -1,4 +1,4 @@
-package com.shopping.ItemService.inventory;
+package com.shopping.ItemService.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -15,7 +15,7 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class Inventory {
     @Id
-    @Column(name = "item_id", nullable = false, updatable = false)
+    @Column(name = "item_id", nullable = false, updatable = false, length = 36)
     private String itemId;
 
     @Column(name = "available_quantity", nullable = false)

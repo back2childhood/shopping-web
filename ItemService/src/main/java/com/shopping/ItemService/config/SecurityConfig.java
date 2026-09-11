@@ -22,6 +22,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/items/*/increase-stock").hasRole("ORDER_SERVICE")
                         .requestMatchers(HttpMethod.POST, "/api/items/*/decrease-stock").hasRole("ORDER_SERVICE")
                         .requestMatchers(HttpMethod.POST, "/api/items").hasRole("SELLER")
+                        .requestMatchers(HttpMethod.GET, "/api/items/mine").hasRole("SELLER")
                         .requestMatchers(HttpMethod.PUT, "/api/items/**").hasRole("SELLER")
                         .requestMatchers(HttpMethod.DELETE, "/api/items/**").hasRole("SELLER")
                         .requestMatchers(HttpMethod.GET, "/api/items/**").authenticated()

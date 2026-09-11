@@ -41,9 +41,9 @@ flowchart LR
 | EurekaServer | 服务注册与发现 | 无 | 无 |
 | AuthService | 注册、登录、BCrypt 密码散列、复用全局用户 ID、签发 JWT | PostgreSQL `auth_service` | AccountService、Eureka |
 | AccountService | 保存不含密码的用户资料，并作为当前系统用户 ID 的生成方 | PostgreSQL `account_service` | Eureka |
-| ItemService | 商品目录 CRUD、SELLER 写权限与库存预留/释放 | Cassandra `shopping_catalog`、PostgreSQL `inventory_service` | Redis、Eureka |
+| ItemService | 商品目录 CRUD、SELLER 写权限与库存预留/释放 | Cassandra `item_service`、PostgreSQL `inventory_service` | Redis、Eureka |
 | OrderService | 创建订单、保存价格快照、查询用户订单 | PostgreSQL `order_service` | ItemService、Redis、Eureka |
-| frontend | 登录/注册、按角色分流、卖家商品管理、买家购物 | 浏览器状态 | API Gateway |
+| frontend | 登录/注册、按角色分流、卖家商品管理、买家购物与订单历史 | 浏览器状态 | API Gateway |
 
 ### 请求链路
 
