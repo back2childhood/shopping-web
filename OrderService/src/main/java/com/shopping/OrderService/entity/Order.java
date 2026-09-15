@@ -2,24 +2,38 @@ package com.shopping.OrderService.entity;
 
 import com.shopping.OrderService.payload.OrderStatus;
 import lombok.*;
-import org.springframework.data.cassandra.core.mapping.Indexed;
-import org.springframework.data.cassandra.core.mapping.PrimaryKey;
-import org.springframework.data.cassandra.core.mapping.Table;
+import jakarta.persistence.*;
 
 import java.io.Serializable;
 import java.time.Instant;
 import java.util.List;
+import java.util.ArrayList;
+import java.math.BigDecimal;
 
 
 @Data
-@Table("orders")
+@Entity
+@Table(name = "orders")
 public class Order implements Serializable {
-    @PrimaryKey
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-    @Indexed
+    @Column(nullable = false)
     private Long userId;
-    private Double totalPrice;
+    @Column(nullable = false, precision = 19, scale = 2)
+    private BigDecimal totalPrice;
+    @Column(nullable = false, length = 3)
+    private String currency;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
     private OrderStatus status;
+    @Column(nullable = false)
     private Instant createdAt;
-    private List<OrderItem> items;
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
+    private List<OrderItem> items = new ArrayList<>();
+
+    public void addItem(OrderItem item) {
+        items.add(item);
+        item.setOrder(this);
+    }
 }

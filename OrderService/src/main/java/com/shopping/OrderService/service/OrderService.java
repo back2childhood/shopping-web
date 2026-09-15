@@ -8,7 +8,6 @@ import java.util.List;
 
 public interface OrderService {
     OrderResponse createOrder(OrderRequest order);
-    OrderResponse cancelOrder(Long orderId);
-    void requestPayment(Long orderId);
+    OrderResponse getOrder(Long orderId);
     List<OrderResponse> getOrders(Long userId);
 }

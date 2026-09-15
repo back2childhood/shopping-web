@@ -7,6 +7,7 @@ import com.shopping.OrderService.service.OrderService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.Valid;
 
 import java.util.List;
 
@@ -22,25 +23,18 @@ public class OrderController {
     }
 
     @PostMapping
-    public ResponseEntity<OrderResponse> createOrder(@RequestBody OrderRequest order) {
+    public ResponseEntity<OrderResponse> createOrder(@Valid @RequestBody OrderRequest order) {
         return ResponseEntity.ok(service.createOrder(order));
     }
 
-    @PostMapping("/{orderId}/cancel")
-    public ResponseEntity<OrderResponse> cancelOrder(@PathVariable Long orderId) {
-        return ResponseEntity.ok(service.cancelOrder(orderId));
+    @GetMapping("/{orderId}")
+    public ResponseEntity<OrderResponse> getOrder(@PathVariable Long orderId) {
+        return ResponseEntity.ok(service.getOrder(orderId));
     }
 
-    @PostMapping("/{orderId}/pay")
-    public ResponseEntity<String> payOrder(@PathVariable Long orderId) {
-        service.requestPayment(orderId);
-        return ResponseEntity.ok("Payment requested");
-    }
-
-    @GetMapping("/{userId}")
+    @GetMapping("/user/{userId}")
     public ResponseEntity<List<OrderResponse>> getOrders(@PathVariable Long userId) {
         List<OrderResponse> res = service.getOrders(userId);
         return ResponseEntity.ok(res);
     }
 }
-

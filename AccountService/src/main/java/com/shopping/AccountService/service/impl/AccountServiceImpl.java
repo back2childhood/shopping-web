@@ -5,13 +5,14 @@ import com.shopping.AccountService.entity.Account;
 import com.shopping.AccountService.payload.AccountRequestDto;
 import com.shopping.AccountService.payload.AccountResponseDto;
 import com.shopping.AccountService.service.AccountService;
-import com.shopping.Common.exception.ResourceNotFoundException;
 import org.modelmapper.ModelMapper;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Collectors;
 
 @Service
@@ -19,54 +20,65 @@ public class AccountServiceImpl implements AccountService {
 
     private AccountRepository accountRepository;
     private ModelMapper modelMapper;
-    private PasswordEncoder passwordEncoder;
-
     @Autowired
-    public AccountServiceImpl(AccountRepository accountRepository, ModelMapper modelMapper, PasswordEncoder passwordEncoder) {
+    public AccountServiceImpl(AccountRepository accountRepository, ModelMapper modelMapper) {
         this.accountRepository = accountRepository;
         this.modelMapper = modelMapper;
-        this.passwordEncoder = passwordEncoder;
     }
 
     @Override
     public AccountResponseDto createAccount(AccountRequestDto dto) {
+        String normalizedEmail = dto.getEmail().trim().toLowerCase(Locale.ROOT);
+        Account existing = accountRepository.findByEmail(normalizedEmail).orElse(null);
+        if (existing != null) {
+            return toResponse(existing);
+        }
         Account account = modelMapper.map(dto, Account.class);
-        account.setPassword(passwordEncoder.encode(account.getPassword()));
+        account.setEmail(normalizedEmail);
+        account.setSeller(Boolean.TRUE.equals(dto.getIsSeller()));
         Account saved = accountRepository.save(account);
-        return modelMapper.map(saved, AccountResponseDto.class);
+        return toResponse(saved);
     }
 
     @Override
     public AccountResponseDto updateAccount(Long id, AccountRequestDto dto) {
         Account existing = accountRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("User", "id", String.valueOf(id)));
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Account not found"));
         existing.setUsername(dto.getUsername());
-        existing.setPassword(passwordEncoder.encode(dto.getPassword()));
         existing.setShippingAddress(dto.getShippingAddress());
         existing.setBillingAddress(dto.getBillingAddress());
-        existing.setPaymentMethod(dto.getPaymentMethod());
         existing.setEmail(dto.getEmail());
+        existing.setSeller(Boolean.TRUE.equals(dto.getIsSeller()));
         Account updated = accountRepository.save(existing);
-        return modelMapper.map(updated, AccountResponseDto.class);
+        return toResponse(updated);
     }
 
     @Override
     public AccountResponseDto getAccountById(Long id) {
         Account account = accountRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("User", "id", String.valueOf(id)));
-        return modelMapper.map(account, AccountResponseDto.class);
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Account not found"));
+        return toResponse(account);
     }
 
     @Override
     public List<AccountResponseDto> getAllAccounts() {
         return accountRepository.findAll()
                 .stream()
-                .map(a -> modelMapper.map(a, AccountResponseDto.class))
+                .map(this::toResponse)
                 .collect(Collectors.toList());
     }
 
     @Override
     public void deleteAccount(Long id) {
-        return;
+        if (!accountRepository.existsById(id)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Account not found");
+        }
+        accountRepository.deleteById(id);
+    }
+
+    private AccountResponseDto toResponse(Account account) {
+        AccountResponseDto response = modelMapper.map(account, AccountResponseDto.class);
+        response.setIsSeller(account.isSeller());
+        return response;
     }
 }

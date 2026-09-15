@@ -1,7 +1,6 @@
 package com.shopping.AccountService.entity;
 
 import jakarta.persistence.*;
-import jdk.jfr.Description;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -27,19 +26,11 @@ public class Account {
     @Column(nullable = false)
     private String username;
 
-    @Column(nullable = false)
-    private String password;
-
-//    @Column(nullable = false)
-
     private String shippingAddress;
     private String billingAddress;
-    @Column(nullable = false)
-    @Description("1 - credit card, 2 - debit card, 3 - paypal")
-    private Integer paymentMethod;
 
-    @Column(nullable = true)
-    private boolean isSeller;
+    @Column(nullable = false)
+    private boolean seller;
 
     @CreationTimestamp
     private LocalDateTime createdAt;
