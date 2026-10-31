@@ -11,6 +11,8 @@ x-runtime: &runtime
 
 x-java-env: &java-env
   JAVA_TOOL_OPTIONS: "-Xms128m -Xmx384m -XX:ActiveProcessorCount=2"
+  # Business ports are internal-only; honor the HTTPS scheme from Caddy/Nginx.
+  SERVER_FORWARD_HEADERS_STRATEGY: framework
 
 services:
   postgres:
@@ -81,6 +83,7 @@ services:
     ports: !reset []
     mem_limit: 896m
     environment:
+      <<: *java-env
       JAVA_TOOL_OPTIONS: "-Xms128m -Xmx512m -XX:ActiveProcessorCount=2"
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
