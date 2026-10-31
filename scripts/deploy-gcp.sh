@@ -11,7 +11,9 @@ compose=(sudo docker compose --project-name shopping-gcp --env-file .env.gcp -f 
 "${compose[@]}" config --quiet
 # Build before starting databases: the 8 GB VM has limited memory.
 # The same command safely reuses build caches on subsequent releases.
-"${compose[@]}" --parallel 1 build
+for service in eureka-server account-service auth-service item-service order-service api-gateway frontend; do
+  "${compose[@]}" build "$service"
+done
 "${compose[@]}" up -d --wait --wait-timeout 900
 "${compose[@]}" ps
 curl --fail --silent --show-error http://127.0.0.1:8088/healthz
