@@ -1,14 +1,12 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
 import { clearSession } from '@/lib/session';
 
 export function PageHeader({ title, label, email }: { title: string; label: string; email: string }) {
-  const router = useRouter();
 
   const logout = () => {
     clearSession();
-    router.replace('/login');
+    window.location.replace('/login');
   };
 
   return (

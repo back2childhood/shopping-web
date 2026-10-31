@@ -1,24 +1,22 @@
 'use client';
 
-import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { PageLink } from '@/components/PageLink';
 import { api } from '@/lib/api';
 import { getWorkspacePath, readSession, saveSession } from '@/lib/session';
 import type { AuthSession } from '@/lib/types';
 
 export function AuthPage({ mode }: { mode: 'login' | 'register' }) {
-  const router = useRouter();
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const session = readSession();
-      if (session) router.replace(getWorkspacePath(session));
+      if (session) window.location.replace(getWorkspacePath(session));
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [router]);
+  }, []);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -42,7 +40,7 @@ export function AuthPage({ mode }: { mode: 'login' | 'register' }) {
         body: JSON.stringify(body),
       });
       saveSession(session);
-      router.replace(getWorkspacePath(session));
+      window.location.replace(getWorkspacePath(session));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to continue');
     } finally {
@@ -113,9 +111,9 @@ export function AuthPage({ mode }: { mode: 'login' | 'register' }) {
             </button>
           </form>
 
-          <Link className="text-button auth-link" href={isLogin ? '/register' : '/login'}>
+          <PageLink className="text-button auth-link" href={isLogin ? '/register' : '/login'}>
             {isLogin ? 'Need an account? Register' : 'Already registered? Sign in'}
-          </Link>
+          </PageLink>
         </div>
       </section>
     </main>

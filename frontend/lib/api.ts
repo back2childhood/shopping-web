@@ -11,8 +11,10 @@ export async function api<T>(path: string, options: RequestInit = {}, token?: st
   });
 
   if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(body?.message || body?.detail || `Request failed (${response.status})`);
+    const body: unknown = await response.json().catch(() => null);
+    const error = body !== null && typeof body === 'object' ? body as Record<string, unknown> : {};
+    const message = [error.message, error.detail].find(value => typeof value === 'string' && value.length > 0);
+    throw new Error(typeof message === 'string' ? message : `Request failed (${response.status})`);
   }
 
   if (response.status === 204) return undefined as T;

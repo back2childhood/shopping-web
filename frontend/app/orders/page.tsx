@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import { PageLink } from '@/components/PageLink';
 import { useCallback, useEffect, useState } from 'react';
 import { CustomerNav } from '@/components/CustomerNav';
 import { LoadingScreen } from '@/components/LoadingScreen';
@@ -73,7 +73,7 @@ export default function OrdersPage() {
           <div className="empty-state orders-empty">
             <strong>No orders yet</strong>
             <span>Your completed checkouts will appear here.</span>
-            <Link className="secondary-button" href="/shop">Start shopping</Link>
+            <PageLink className="secondary-button" href="/shop">Start shopping</PageLink>
           </div>
         )}
 

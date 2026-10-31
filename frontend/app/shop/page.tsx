@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { CustomerNav } from '@/components/CustomerNav';
 import { LoadingScreen } from '@/components/LoadingScreen';
 import { PageHeader } from '@/components/PageHeader';
@@ -10,7 +9,6 @@ import { api } from '@/lib/api';
 import type { Item, Order } from '@/lib/types';
 
 export default function ShopPage() {
-  const router = useRouter();
   const session = useRequiredSession('BUYER');
   const [items, setItems] = useState<Item[]>([]);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
@@ -42,7 +40,7 @@ export default function ShopPage() {
           items: selected.map(item => ({ itemId: item.id, quantity: quantities[item.id] })),
         }),
       }, session.token);
-      router.push(`/orders?created=${result.id}`);
+      window.location.assign(`/orders?created=${result.id}`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not place order');
     } finally {
