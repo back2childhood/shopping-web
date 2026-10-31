@@ -6,3 +6,8 @@ frontend/dist
 frontend/.next
 frontend/.wrangler
 *.log
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+*.md

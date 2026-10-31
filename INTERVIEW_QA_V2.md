@@ -35,6 +35,47 @@ The capacity model used consistently throughout the document is one million dail
 23. Design patterns used in the shopping platform
 24. Rapid deep-dive questions
 25. Final answers and number sheet
+26. Order state machine and lifecycle rules
+27. Inventory reservations and payment idempotency
+28. Order events, outbox, retries, and dead letters
+29. Product and cart caching under failure
+30. Access tokens, refresh tokens, RBAC, and ownership
+31. Third-party payment calls with WebClient and Resilience4j
+32. Observability, structured logging, and incident investigation
+33. Deployment, migrations, and Gateway capacity
+34. Reliability tests and an interview preparation walkthrough
+35. Elasticsearch product keyword search
+36. AI shopping assistant, embeddings, Milvus, and agent tools
+37. AWS networking, permissions, storage, and recovery
+38. Docker and Kubernetes release operations
+39. [CI/CD: From Pull Request to AWS/EKS Release](#page-39)
+40. [Spring Security: Login, JWT Filters, and Authorization](#page-40)
+41. [Logging: SLF4J, Logback, OpenTelemetry, and Splunk](#page-41)
+
+Pages 39–41 are paired with the same numbered Chinese chapters. They expand the complete-platform architecture scenario, not a claim that a pipeline or Splunk deployment was verified. Earlier security and observability sections remain useful background; these chapters explain implementation and operations in one place. Sample budgets are design inputs, not measured results.
+
+## Resume coverage index
+
+This index follows the latest 14 resume bullets, with AWS and Kubernetes kept separate. Every row maps the whole responsibility to explanations in this document, not just a matching technology name. Page numbers are section labels, not printed PDF page numbers. The extended answers remain architecture preparation material rather than evidence of deployment or measured results.
+
+| Resume bullet | What to be ready to explain | Read these pages |
+|---|---|---|
+| 1. Java 17, Spring Boot, REST, Feign, Eureka, Gateway | Service ownership, request flow, discovery, routing, remote failures | 3, 6, 7, 21 |
+| 2. Order lifecycle | Creation, payment, shipping, cancellation, refunds, customer-visible status | 2, 17, 26 |
+| 3. PostgreSQL/JPA inventory | Restocking, reservations, releases, concurrency, retry safety | 9, 10, 27 |
+| 4. Payment and refund integration | Duplicate charges, unknown outcomes, WebClient, Resilience4j, refund recovery | 27, 31 |
+| 5. Kafka processing | Independent consumers, outbox delivery, deduplication, retries, DLT replay | 11, 12, 28 |
+| 6. Hibernate/PostgreSQL/Cassandra modeling | Entities, historical snapshots, query views, event synchronization, rebuilding | 9, 10, 13 |
+| 7. Redis caching | Product/seller/order keys, expiry, invalidation, fallback, serialization incident | 14, 29 |
+| 8. Elasticsearch | Keyword matching, category/price filters, current catalog data, index recovery | 35 |
+| 9. CompletableFuture and bounded pools | Parallel reads, downstream limits, failure, transaction boundaries | 15, 16 |
+| 10. Spring Security and JWT | Authentication, renewal, filter chains, roles, order/product ownership | 8, 30, 40 |
+| 11. AWS | Cloud network, IAM, persistent storage, complete-platform deployment and recovery | 37 |
+| 12. Docker/Kubernetes | Images, probes, CI/CD gates, rolling releases, shutdown | 21, 33, 38, 39 |
+| 13. JUnit/Mockito/Testcontainers | Unit versus integration scope, contention, duplicate effects, failure injection | 22, 34 |
+| 14. AI shopping assistant | Ingestion, chunking, embeddings, Milvus, conversation, tools, grounding and evaluation | 36 |
+
+Pages 26–38 extend the interview discussion with the mock-interview feedback and the latest resume responsibilities, including search, AI discovery, and cloud operations. They describe the target architecture, not a claim that every feature has already been implemented or benchmarked. Their sample answers explain the intended shopping-platform behavior; numerical examples are calculations or test acceptance criteria unless explicitly identified as an observed result. This update changes documentation only.
 
 ---
 
@@ -560,6 +601,14 @@ I compare `EXPLAIN (ANALYZE, BUFFERS)` on production-shaped data. I inspect actu
 
 A 100-item page can perform one item query plus 100 inventory lookups. One batch `WHERE item_id IN (...)` changes 100 inventory round trips into one, a 99% reduction. Eager order lines may similarly over-fetch history pages.
 
+### What did Hibernate and Spring Data JPA do in your data model?
+
+JPA defines the persistence model, Hibernate implements it, and Spring Data JPA reduces repetitive repository code. I map an order header to its lines, enforce required columns and keys in PostgreSQL, and save the header and lines in one local transaction. Cascading a save does not automatically make every association or delete safe; I choose cascade and orphan-removal rules according to ownership.
+
+Order lines retain the purchased name, unit price, quantity, and currency context rather than joining the current product price to produce an old receipt. I use BigDecimal and a deliberate database decimal precision for money. Entity relationships do not replace service boundaries: Order holds an item ID and snapshot, not a cross-service JPA association to Item Service's database.
+
+For history pages, I inspect generated SQL and fetch only the fields needed. Lazy relationships can produce repeated queries when a mapper walks them; eager relationships can load too much data. DTO projections, deliberate fetch plans, and batch reads address specific query problems, while schema migrations and constraints remain explicit database work.
+
 ### Why not `ddl-auto=update` in production?
 
 It is convenient locally but is not a reviewed, versioned migration plan. Flyway/Liquibase and expand-migrate-contract allow old and new service versions to coexist during rolling deployments.
@@ -732,7 +781,7 @@ That is 56 logical partitions. With replication factor 3, the cluster maintains 
 
 ## Why these keys
 
-Kafka guarantees order inside one partition, not across the whole topic. `itemId` preserves create/update/delete order for one item. `orderId` preserves one Saga’s transitions. `paymentId` preserves authorize/capture/refund order. `conversationId` preserves message order within a conversation.
+Kafka preserves append order inside a partition, not a global business order. With stable partition mapping, itemId, orderId, paymentId, or conversationId groups the corresponding records within one topic. Publishers must still emit changes in the intended order, and consumers must preserve required processing order. Keys do not order separate topics or prevent retry topics from allowing later events to overtake a failed event; business state and version checks remain necessary.
 
 Keys can create hotspots. One celebrity conversation is limited by one partition’s capacity because preserving its strict order prevents arbitrary spreading. If product semantics permit, it can be divided into substreams with sequence-based merge; otherwise the ordered throughput has a real physical limit.
 
@@ -1044,6 +1093,16 @@ The current item-lookup executor uses `CallerRunsPolicy`. When its queue and max
 ### How do you detect pool saturation?
 
 I monitor active threads, pool size, queue depth, queue wait time, task duration, rejection count, and downstream connection wait. Low CPU with a full queue often means threads are blocked on a dependency.
+
+### Does a bounded executor strictly cap all downstream calls?
+
+Not with CallerRunsPolicy by itself. When the pool is full, submitting request threads can also execute tasks, so downstream calls can exceed the worker maximum. The bounded queue prevents unlimited queued tasks, but a strict dependency-wide concurrency limit needs a separate bulkhead, semaphore, or equivalent admission control. This distinction matters when explaining the resume claim that parallel calls are controlled.
+
+### What if one parallel product lookup fails or times out?
+
+Required product details must all be valid before checkout continues. I map a failed lookup to an honest checkout error and bound the HTTP call, queue waiting, and overall request deadline. CompletableFuture.allOf waits for all component futures to complete; it is not a guaranteed immediate fail-fast mechanism. Cancelling a CompletableFuture does not guarantee that the underlying blocking HTTP request is interrupted, so client timeouts and resource cleanup still matter.
+
+Four independent 80ms reads take approximately 320ms of serial waiting. With enough available capacity, parallel waiting can approach the slowest read plus overhead, but there are still four HTTP calls. This is a calculation about the read stage, not a measured checkout improvement or a replacement for batch APIs.
 
 ---
 
@@ -1691,6 +1750,712 @@ I also designed the order concurrency model around durable commands, bounded wor
 ## Final rule for senior interviews
 
 Never stop at a technology name. Explain what problem it solves, what data or request passes through it, why the chosen key/partition/index/pool size matches that workload, what number improved, and what the system does when that component fails. If you cannot explain failure and recovery, the design is not complete.
+
+---
+
+# Page 26 — Order State Machine and Lifecycle Rules
+
+## What the interviewer may ask
+
+“How do you manage an order?” “Is an enum enough?” “What happens when payment and cancellation happen together?”
+
+## What I say
+
+A state machine means an order can move only through transitions that make business sense. In this shopping platform, I would not let an API accept an arbitrary status string and save it. The service should expose business operations such as pay, cancel, ship, and complete, and each operation checks the existing state before changing it. This prevents a cancelled order from being shipped or an unpaid order from being completed.
+
+I separate order status, payment status, and reservation status because they describe different facts. An order can be awaiting payment while its stock is already reserved. A cancelled order can still have a refund in progress. Keeping those facts separate makes recovery easier than trying to put every possible combination into a single enum, but the service still has to enforce rules across the three fields.
+
+## What states and transitions would you use?
+
+| Dimension | Example states | Rule in this shopping flow |
+|---|---|---|
+| Order | PENDING_PAYMENT, PAID, SHIPPED, COMPLETED, CANCELLED | Shipping requires confirmed payment and inventory commitment. |
+| Payment | NOT_STARTED, PROCESSING, SUCCEEDED, FAILED, REFUND_PENDING, REFUNDED | A timeout remains unresolved; it does not establish failure. |
+| Reservation | PENDING, RESERVED, CONFIRMED, RELEASED, FAILED | A reservation can be confirmed or released once, not both. |
+
+For this design, an unpaid order can be cancelled, a paid but unshipped order can enter cancellation and refund processing, and a shipped order requires a separate return policy rather than ordinary cancellation. Partial shipments and partial refunds would require line-level or amount-level state; the simple model assumes whole-order fulfillment and full refunds. These are explicit scope decisions, not universal commerce rules.
+
+## How do you prevent two requests from changing the same order?
+
+The enum describes valid values, but the database decides which concurrent update wins. I use a conditional update or optimistic version check, and write the resulting outbox event in the same transaction. For example, a payment transition can require both the expected order status and the expected version.
+
+```sql
+UPDATE orders
+SET status = 'PAID', version = version + 1
+WHERE id = :orderId
+  AND status = 'PENDING_PAYMENT'
+  AND version = :expectedVersion;
+```
+
+If the affected-row count is zero, I reload the order and classify the result. It might be a duplicate notification, an optimistic-lock conflict, or a genuinely forbidden operation. I do not publish a new event when no transition happened. In a test with 20 identical payment notifications, the expected result is one transition and one logical transition event, even though the event may be delivered more than once.
+
+## What happens if cancellation wins just before payment succeeds?
+
+I still record the payment provider's success: an internal cancellation cannot undo an external charge. The order stays on the cancellation path and the payment moves to REFUND_PENDING, with a durable refund request. If payment wins first, cancellation follows the paid-order policy instead of releasing everything as if no money moved. A failed refund remains visible and retryable; I never label it REFUNDED before the provider confirms it.
+
+## Why does this improve the project?
+
+The main improvement is correctness and explainability, not a promised latency gain. Each transition has an expected state, an audit record, and a defined recovery path. Support can distinguish “cancelled and refunded” from “cancelled but refund pending,” and concurrency tests can assert that contradictory transitions never both succeed.
+
+## How do shipping and customer-visible progress fit into this bullet?
+
+For the whole-order fulfillment scope, an authorized seller records shipment details only after payment and inventory conditions are satisfied. The transition stores its timestamp and tracking reference, and repeated shipment updates do not start another fulfillment action. Completion follows a defined receipt or delivery policy; it is not an arbitrary status supplied by the browser. A real carrier integration is a separate capability from recording shipment information.
+
+The buyer's order-status API and the seller's management view read the persisted lifecycle. Events can feed notifications, but notification delivery is not the authority for whether an order is paid or shipped. A cancelled order with a pending refund is displayed as such rather than hidden behind a single generic completed flag. Partial shipments and partial refunds would need additional line-level or amount-level rules.
+
+---
+
+# Page 27 — Inventory Reservations and Payment Idempotency
+
+## What the interviewer may ask
+
+“How do you avoid overselling?” “Why is a database transaction not enough?” “What happens when a buyer double-clicks Pay?”
+
+## What I say
+
+Inventory concurrency and request idempotency solve different problems. An atomic stock update stops two buyers from spending the same last unit. An idempotency record stops the same buyer request from reserving two units after a timeout and retry. For the shopping flow, I need both: a stock condition enforced by PostgreSQL and a durable reservation identity tied to the order.
+
+For payment, I associate a client Idempotency-Key with the authenticated customer, operation, request fingerprint, and payment attempt. Repeating the same key with the same request returns the existing attempt or its current status. Reusing it with a different amount or order is a conflict. A database unique constraint arbitrates simultaneous requests; an initial SELECT alone cannot prevent both requests from inserting.
+
+## What records would you store?
+
+| Record | Important fields or constraint | Purpose |
+|---|---|---|
+| Inventory | item_id, available_quantity, reserved_quantity, version | Authoritative stock counters, with nonnegative constraints. |
+| Reservation | reservation_id, order_id, item_id, quantity, status; unique(order_id, item_id) | One reservation per aggregated item line in this model. |
+| Payment attempt | payment_id, order_id, amount, currency, provider_request_id, status | Tracks a stable external payment operation. |
+| Idempotency record | principal_id, operation, key, request_hash, result_id; unique(principal_id, operation, key) | Resolves duplicate API requests to one business operation. |
+| Refund | refund_id, payment_id, amount, provider_request_id, status | Retries a refund without issuing another refund. |
+
+In Item Service, claiming the reservation identity and updating inventory belong to one local transaction. Reserving moves quantity from available to reserved. Confirming removes it from reserved as sold, while releasing moves it back to available. Those operations check the reservation's previous state, so a duplicate release cannot increase stock twice. If re-reservation is later allowed, the model needs an explicit attempt identity rather than silently reusing a released reservation.
+
+## Would you use optimistic locking or atomic updates?
+
+For a simple stock counter, a conditional update with `available_quantity >= :quantity` expresses the rule directly. I validate that quantity is positive before executing it. For multi-field product edits, a version check makes it clear when another seller update won. For an all-or-none basket reservation, Item Service can update several rows in one transaction and roll everything back if any line fails; consistent item-ID lock ordering reduces deadlock risk.
+
+## How do seller stock updates interact with purchases?
+
+Restocking is a positive quantity adjustment, while reservation and release move quantities between defined stock states. I avoid letting a seller's stale screen overwrite the current counter with an old absolute value. An explicit adjustment command or expected-version check preserves concurrent purchases, and an adjustment identity prevents retrying the same restock from adding it twice. Authorization confirms that the seller owns the item before accepting the change.
+
+## Does a unique payment key guarantee no duplicate charge?
+
+It guarantees a local identity, not atomicity with the provider. The provider must accept a stable idempotency identifier, or offer an equivalent lookup and reconciliation contract. After a timeout I reuse the original provider identifier and check the outcome. If the provider cannot deduplicate or resolve an unknown result, blindly retrying a charge is unsafe and requires manual reconciliation or a different integration contract.
+
+I also prevent concurrent active payment attempts for the same order through an order-level guard. Otherwise a client could supply two different keys and bypass request-level deduplication. A definitively failed attempt may permit a new attempt, but a PROCESSING or unknown attempt must be resolved first.
+
+## Why not use Redis alone, and what is the measurable benefit?
+
+Redis can quickly return a known result or reduce contention, but losing a key must not permit another charge. The database keeps the durable uniqueness rule. In a proposed test, 20 requests with the same key should resolve to one payment attempt and one provider charge. That is a correctness criterion; I would not call it a 95% latency improvement, because duplicate suppression and latency measure different things.
+
+---
+
+# Page 28 — Order Events, Outbox, Retries, and Dead Letters
+
+## What the interviewer may ask
+
+“Where does Kafka fit in checkout?” “What if the consumer crashes?” “Does using orderId guarantee ordering?”
+
+## What I say
+
+I use events to carry committed business facts between services, not to hide whether an order was saved. When a service accepts a state change, it writes its business record and outbox record in one PostgreSQL transaction. A publisher then sends the outbox record to Kafka. This lets the API finish its local work without waiting for every notification or read-model update, while preserving a durable record of the work that still needs delivery.
+
+Each service owns its own transaction and events. Order publishes order lifecycle changes, Item publishes reservation outcomes, and Payment publishes payment or refund outcomes. A coordinator consumes those outcomes and advances the order workflow. No single `@Transactional` annotation covers all of those databases or Kafka plus an external payment provider.
+
+## What event contracts would you introduce?
+
+| Topic example | Events | Key | Main consumers |
+|---|---|---|---|
+| order-lifecycle | OrderCreated, OrderCancelled, OrderCompleted | orderId | Workflow, notification, analytics |
+| inventory-reservation-events | InventoryReserved, ReservationFailed, InventoryReleased | orderId | Order workflow |
+| payment-events | PaymentSucceeded, PaymentFailed, RefundSucceeded | orderId | Order workflow and accounting projection |
+
+These names describe the proposed order extension, not an inventory of currently deployed topics. Each envelope includes eventId, orderId, eventType, schemaVersion, aggregateVersion, occurredAt, and correlation information. Versions from different owning aggregates are not comparable as one global counter. Commands such as RequestRefund describe requested work; RefundSucceeded describes a confirmed outcome, and consumers must not confuse them.
+
+## What if the publisher crashes after Kafka accepts the event?
+
+The outbox row can still look unsent, so another publisher sends it again. That is why consumer deduplication is mandatory. For a PostgreSQL consumer, I insert `(consumer_name, event_id)` into a uniquely constrained inbox table and apply the business change in the same local transaction. If the insert indicates a duplicate, I skip that already-applied effect; if the business change fails, the inbox insert rolls back too. Kafka offsets advance only after successful handling.
+
+This pattern covers local database effects. If the consumer calls a payment provider, the inbox transaction does not wrap the external charge. I instead persist a durable payment command and use provider-side idempotency, so a process restart cannot turn an uncertain response into a second charge.
+
+## What ordering do you actually guarantee?
+
+Using orderId places an order's records in the same partition of one topic while the partition mapping is stable. It does not order three separate topics, and Kafka preserves arrival order rather than correcting an outbox publisher that emitted versions in the wrong sequence. Multiple publishers therefore need an aggregate-aware publication strategy, and consumers still check state and version. Adding partitions also requires care because key-to-partition mapping can change.
+
+For strict transition processing, I do not hand records from one partition to uncontrolled parallel workers. I can process different partitions concurrently, but preserve sequencing where the business requires it. If a missing prerequisite arrives later from another topic, I persist or reconcile the pending outcome instead of discarding it as an impossible event.
+
+## How do retry and a dead-letter queue work?
+
+Transient failures get bounded retries with backoff and jitter. Invalid schemas or permanently invalid data go to a dead-letter topic with the original identity and failure context, subject to sensitive-data controls. An alert identifies affected orders, and replay happens after the underlying issue is corrected, preserving the event identity for deduplication.
+
+Retry topics allow later records to overtake a failed record, so they are not interchangeable with ordered blocking retries. For an order state stream, I would choose partition pause/bounded retry or durable per-order pending processing based on the ordering requirement. Sending a record to a DLT does not mean the order workflow completed. This ordering tradeoff is documented by [Spring Kafka's non-blocking retry guidance](https://docs.spring.io/spring-kafka/reference/retrytopic.html).
+
+## How would you choose partition count?
+
+I start from processing rate and recovery capacity, not user count. Suppose this order stream receives 100 events/s and a measured serial consumer can handle 25 events/s; four active partitions merely match steady input, while eight offer nominal recovery headroom if keys are balanced and downstream capacity permits it. With 20 partitions and five subscribed consumer instances in one group, a balanced assignment is about four partitions each. More consumers in another group independently receive the stream; they do not share this group's work.
+
+---
+
+# Page 29 — Product and Cart Caching Under Failure
+
+## What the interviewer may ask
+
+“How does Cache Aside work here?” “What are penetration and stampede?” “What happens if Redis goes down?”
+
+## What I say
+
+For product reads, the service first checks Redis. A hit returns the cached product; a miss reads the data source and caches the result for a limited time. Redis is an acceleration layer, not the authority for whether a buyer can reserve stock or what amount the checkout must charge. Checkout validates authoritative pricing and inventory rules before accepting the order.
+
+The project uses PostgreSQL as the item authority and Cassandra as a read projection, so there are actually two possible sources of staleness. Evicting Redis immediately after a PostgreSQL commit can still refill it from an old Cassandra projection. The design needs version-aware cache population or invalidation after the projection update as well, plus a bounded TTL and reconciliation if invalidation fails. “Delete the key” is not a complete consistency protocol.
+
+## How would you cache the shopping cart?
+
+For a persistent-cart design, PostgreSQL stores cart lines and Redis caches a buyer-scoped cart representation. Cache keys include user identity, and writes use a cart version so simultaneous browser tabs do not silently overwrite each other. Cart prices are display estimates; adding an item to the cart does not reserve stock or guarantee the checkout price.
+
+Keeping a cart only in Redis is a different product decision because expiration, eviction, or data loss can remove it. I would explicitly agree on that loss tolerance rather than describe Redis as “just a cache” while it holds the only copy. A persistent cart survives a Redis failure by rebuilding from its authoritative store.
+
+## How do you handle penetration, stampede, and synchronized expiry?
+
+Penetration means repeated reads for nonexistent products keep reaching the database. I validate IDs and may cache a not-found result briefly, while limiting abusive requests. Stampede means many callers miss the same hot key together; request coalescing lets one load run while others await its result. Coalescing within one JVM does not coordinate other replicas, so a distributed lease or origin concurrency limit may still be useful.
+
+For many keys expiring together, I spread expiration times with jitter. A lease must expire and be released only by its owner, and correctness must not depend on it never failing. Stale product descriptions can sometimes be served within a declared window; cached stock cannot authorize a sale. Redis failure falls back only within an origin capacity limit, otherwise the service sheds load rather than overwhelming PostgreSQL or Cassandra.
+
+## What numbers can you explain?
+
+At 700 product reads/s and an 85% hit rate, the modeled origin load is `700 × 0.15 = 105 reads/s`. Losing Redis raises that to as much as 700 reads/s, roughly 6.7 times the previous origin load. That explains why a fallback needs protection. It does not prove an 85% latency reduction, and a high hit rate can still hide slow misses that dominate p99.
+
+## How do seller listings and order caches differ from product details?
+
+A product key identifies an item; a seller-list key must also reflect the seller, pagination, and filters that change its result. Updating one product may invalidate both its detail and relevant list entries. Broad list eviction is simple but can create repeated reloads, so the invalidation scope and pagination strategy should match actual usage.
+
+Order data requires ownership checks even on a cache hit. A cache keyed by orderId is not permission to disclose that order to any caller who guesses the ID. Paid, cancelled, and refund-pending transitions must update or invalidate the corresponding read result, while checkout still uses authoritative amounts and stock rather than a potentially stale cache.
+
+## Give a real debugging example from this project
+
+The product list could be written to Redis but could not be read back because the cached collection's serialized type information did not match the deserializer's expectations. The fix collected results into ArrayList, changed the cache namespace from v4 to v5, and added serialization round-trip coverage. Two consecutive live backend reads then returned HTTP 200 with three products, and the new Redis key appeared. That is functional verification, not a load-test result.
+
+The `SimpleKey []` suffix means the cached method has no arguments; it does not mean the stored list is empty. This incident illustrates why I test the actual serializer in addition to mocking a cache, and why backend errors should not be disguised as authorization failures.
+
+---
+
+# Page 30 — Access Tokens, Refresh Tokens, RBAC, and Ownership
+
+For the complete Spring Security login/provider/filter-chain explanation and test strategy, continue with [Page 40](#page-40).
+
+## What the interviewer may ask
+
+“How do you secure orders?” “Why do you need refresh tokens?” “Is checking BUYER enough?”
+
+## What I say
+
+Authentication establishes who is calling, while authorization decides what that caller may do. The shopping platform uses a shared user identity between Account and Auth, and the access token carries that identity and roles. The Gateway checks the token before routing, but Order Service still verifies that the authenticated user owns the requested order. Being a buyer does not give someone access to every buyer's orders.
+
+A short-lived access token limits how long a stolen token remains useful without an additional revocation check. A refresh token lets an existing session obtain a new access token without entering the password each time. In the extended design, I keep a hashed refresh-token record with expiry, session identity, and revocation state, and rotate it when used. This gives logout and stolen-session handling a server-side control point.
+
+## How do you enforce ownership and roles?
+
+I obtain userId from the verified security context, not from a client-supplied order body. A normal order lookup can query by both orderId and userId. Administrative access uses an explicit separate permission path and audit trail. Seller item updates similarly check the item's owner, rather than trusting a sellerId supplied in the request.
+
+JWT validation includes signature, allowed algorithm, expiration, issuer, and audience. Invalid or missing authentication normally maps to 401; an authenticated caller without permission maps to 403, although ownership lookups can deliberately return 404 to avoid revealing another user's resource. Token claims are readable, so they must not contain passwords, payment secrets, or unnecessary personal data.
+
+## What happens when a refresh token is reused?
+
+Rotation consumes the old token atomically and creates its replacement. Reuse of an already-consumed token is a possible theft signal and can revoke that session's token family. Concurrent legitimate refreshes need a documented handling policy and client-side coordination so they do not create unpredictable sessions. If the refresh store is unavailable, I fail refresh safely rather than issuing an untracked token.
+
+## Where do browser tokens live, and what improves?
+
+An HttpOnly, Secure cookie reduces JavaScript access to a refresh token, but cookie-authenticated endpoints also need an appropriate CSRF defense and SameSite policy. JavaScript-readable storage has different XSS exposure, and CORS is not an authorization mechanism. I choose the storage and browser flow together rather than treating JWT as a complete browser security design.
+
+Local token verification can remove a synchronous Auth lookup from each ordinary request, but role changes may remain stale until expiration unless extra checks exist. A hypothetical 15-minute access lifetime instead of 48 hours changes the maximum ordinary expiry window from 2,880 minutes to 15; it does not eliminate theft or provide instantaneous revocation. Those lifetimes are examples, not a claim about the current configuration.
+
+---
+
+# Page 31 — Third-Party Payment with WebClient and Resilience4j
+
+## What the interviewer may ask
+
+“How do you handle a slow payment provider?” “Can you retry?” “What does your fallback return?”
+
+## What I say
+
+WebClient is an HTTP client that can wait for network responses without occupying a thread per wait when used in a nonblocking flow. Resilience4j provides separate controls for timeouts, retries, circuit breaking, and concurrent-call limits. In the payment integration, I use those controls to prevent one provider problem from exhausting the shopping service, not to pretend a failed call succeeded.
+
+Before calling the provider, I persist a payment attempt with a stable provider request ID. I then make the external call outside a long database transaction. A confirmed response updates the attempt in a new short transaction and writes an outbox event. An unknown result remains PROCESSING or an equivalent unresolved state until a callback or reconciliation query establishes what happened.
+
+## How would you set a timeout and retry budget?
+
+As a starting example, a three-second overall deadline could permit two attempts with a one-second per-attempt total budget and one 200ms backoff, leaving time for other work. Connection establishment, pool acquisition, response reading, and retries must fit the actual deadline; simply configuring a socket response timeout is not the same thing. The numbers need testing against provider latency and the user-facing SLA.
+
+I retry only classified transient errors when the operation is idempotent. A card decline or invalid request is not made successful by another immediate call. Resilience4j's retry attempt count includes the initial call, and decorator ordering determines whether the breaker observes individual attempts or the final retried result. I make that choice explicit and test it, rather than stacking annotations and assuming the outcome. See the [Resilience4j Retry configuration](https://resilience4j.readme.io/docs/retry).
+
+## What is the difference between the circuit breaker and the bulkhead?
+
+A circuit breaker stops new calls after enough failures or slow calls have been observed; after a wait, limited probes check recovery. A bulkhead limits concurrent work even before that failure threshold is reached. A timeout bounds waiting for one operation. None of these proves the provider cancelled work when the client stopped waiting.
+
+At 50 payment attempts/s and 500ms mean provider latency, expected in-flight work is about `50 × 0.5 = 25` calls. If latency rises to five seconds, it becomes approximately 250 without other limits. This is why bounded concurrency and pool acquisition deadlines matter. A retry layer can multiply traffic further, so I avoid retries independently enabled at every hop.
+
+## What does fallback do, and what if JDBC blocks WebFlux?
+
+If the payment attempt is durably recorded but its outcome is unknown, the API can return a processing response with an attempt ID and a status endpoint. If the request was not durably accepted, it must return an honest failure. Fallback never manufactures PaymentSucceeded, and a client disconnect does not erase the durable attempt.
+
+Blocking JDBC must not run on a WebFlux event-loop thread. I can keep the business service on MVC with bounded blocking execution, isolate necessary blocking work on a bounded scheduler with explicit transaction boundaries, or adopt a reactive persistence stack when justified. Moving JDBC to another scheduler protects the event loop but does not make the database call nonblocking or remove database connection limits.
+
+## How do refunds and callbacks complete the payment responsibility?
+
+A refund has its own durable operation ID, amount, and provider reference linked to a successful payment. A full refund can be requested only within the allowed business policy; if partial refunds are supported, concurrent requests must not exceed the remaining refundable amount. Duplicate refund requests reuse the same operation, and an unknown provider response remains pending until confirmed rather than issuing another refund.
+
+Provider callbacks are authenticated and matched against the expected payment, amount, and currency. I tolerate duplicate and delayed callbacks by checking the stored operation state, record the confirmed outcome, and publish the result through the local outbox. A callback does not override a cancelled order blindly: the order workflow may instead need a refund. Tests should inspect the provider's recorded effect, not only our database row count.
+
+---
+
+# Page 32 — Observability, Structured Logging, and Incident Investigation
+
+For the logging implementation, Splunk collection path, SPL examples and capacity budget, see [Page 41](#page-41).
+
+## What the interviewer may ask
+
+“How do you know payment is unhealthy?” “How do you add Grafana?” “Do you use Log4j or Splunk?”
+
+## What I say
+
+I distinguish metrics, logs, and traces. Metrics tell me whether the service is behaving normally over time, logs describe particular events, and traces show the path of a request across services. For orders, a healthy HTTP endpoint is not enough: I also need to know whether accepted orders become paid, whether refunds remain pending, and whether outbox events are accumulating.
+
+Spring Boot Actuator exposes operational endpoints, and Micrometer provides application metrics. With the Prometheus registry and the appropriate protected endpoint exposure, Prometheus scrapes metrics and Grafana visualizes them. Grafana is not a library that stores metrics inside Spring Boot. The wiring is described in [Spring Boot's metrics documentation](https://docs.spring.io/spring-boot/reference/actuator/metrics.html).
+
+## Which metrics would you put on the dashboard?
+
+| Signal | Why it matters in this project |
+|---|---|
+| Request rate, error ratio, latency histogram by route | Distinguishes traffic changes from slower or failing requests. |
+| Payment success, decline, unknown outcomes, unresolved age | Separates technical failure from legitimate business declines. |
+| Oldest pending outbox age and pending count | Detects publication failure even when HTTP writes succeed. |
+| Consumer-group lag and oldest unprocessed age | Shows async delay; needs broker/exporter or equivalent collection, not just HTTP metrics. |
+| Inventory conflicts and reservation age | Detects contention and abandoned reservations. |
+| DB pool wait, HTTP pool wait, executor rejection | Locates capacity bottlenecks before every request times out. |
+| JVM heap, GC pause, CPU, thread counts | Identifies runtime pressure or leaks. |
+| Cache hits, misses, errors, origin load | Distinguishes cold cache from Redis failure. |
+
+Payment success rate needs a denominator, such as confirmed successful attempts divided by resolved attempts in a defined window. I display pending attempts separately so a growing unresolved backlog cannot make the success rate look healthy. Per-user IDs and order IDs belong in logs and traces, not metric labels, because their unbounded combinations create excessive time series.
+
+## How do you explain p95 and p99?
+
+For 10,000 requests in a chosen window, p95 is the duration at or below which roughly 9,500 requests finish, and p99 covers roughly 9,900. I report the route, window, throughput, and error rate alongside them. I aggregate histogram buckets across replicas rather than averaging instance percentiles, which does not produce the overall percentile.
+
+## How would you handle logs and Splunk?
+
+Application code can log through SLF4J, backed by a chosen implementation such as Logback or Log4j2. I use structured records with service, environment, version, timestamp, level, traceId, orderId where relevant, eventId, operation, duration, and outcome. A collector forwards container output to a centralized platform such as Splunk. Naming a logging library alone does not explain retention, access control, ingestion cost, or incident investigation.
+
+I propagate trace context across HTTP and Kafka headers and restore logging context when work moves between threads. Context must be cleared after pooled work to avoid attributing the next order to the previous one. I redact tokens, passwords, and sensitive customer information, and avoid blocking the request path indefinitely if the log destination fails. Financial audit records need durable business storage rather than reliance on best-effort debug logs.
+
+## Walk me through a payment incident
+
+I first scope the problem by time, release version, route, and provider. If payment p99 increases while CPU remains normal, I inspect provider latency and connection-pool wait before increasing application replicas. I search a failed order's trace ID, follow its payment attempt and event IDs, and check whether the provider outcome is unknown or definitively failed.
+
+After mitigation, I reconcile unresolved attempts and replay only the safe pending work. I confirm that backlog age falls and business outcomes recover, not merely that HTTP errors stop. If a logging outage occurs, metrics and durable attempt records still support investigation; alerting should also report telemetry ingestion failure itself.
+
+---
+
+# Page 33 — Deployment, Database Migration, and Gateway Capacity
+
+For the pull-request-to-production CI/CD pipeline and approval gates, see [Page 39](#page-39).
+
+## What the interviewer may ask
+
+“How do you deploy?” “What happens to the database during rollback?” “How many pods and how much QPS?”
+
+## What I say
+
+For the project, Docker Compose provides a reproducible local deployment. A Kubernetes rollout story is a separate deployment design unless I have actually executed it. The release process I would explain builds and tests an immutable image, validates environment configuration and secrets, applies compatible database migrations, rolls out instances, and checks both technical metrics and order outcomes before considering the release healthy.
+
+During a rolling deployment, old and new versions overlap. I therefore use expand-and-contract migrations: introduce compatible columns or tables, deploy code that works with the transition, backfill where necessary, and remove the old shape only after it is no longer used. Rolling back an image does not undo a destructive schema migration or an external payment.
+
+## What happens to in-flight work when a pod stops?
+
+Readiness stops new routing to a draining instance, and graceful shutdown gives in-flight work a bounded opportunity to finish. Kafka processing stops accepting new work and commits only completed offsets. If termination still interrupts an operation, durable state and idempotency allow another instance to recover it. I avoid making liveness depend on every downstream system because a shared database outage should not cause every pod to restart repeatedly.
+
+Configuration and secrets required by the new version must exist before rollout. I validate timeouts, topic names, database permissions, and compatibility in a staging environment. Breaking configuration changes need versioning or a coordinated transition, and credentials must not be baked into the image or logged at startup.
+
+## What belongs at the Gateway?
+
+The Gateway handles routing, edge authentication, request-size limits, rate limits, trace propagation, and downstream timeout/circuit-breaker policy. Ownership and money rules remain in the owning services. It must not return a successful order response because a fallback ran, and it should not blindly retry non-idempotent writes. Load balancing chooses a destination; it does not fix a slow database shared by all destinations.
+
+## How do you justify users, RPS, QPS, and pod count?
+
+The existing document's capacity model uses 1M daily active users and 200 average API requests/s. That is 17.28M requests/day, or 17.28 requests per active user per day. A 1,000-RPS peak is a five-times planning assumption, not a result implied by user count. I use RPS for HTTP requests and define QPS explicitly because it may otherwise refer to database queries; orders/s is a separate business throughput.
+
+Suppose a representative load test establishes a safe 250 RPS per replica at the agreed latency and error targets. Four replicas cover 1,000 RPS nominally, while five preserve that nominal capacity after losing one replica. This is a sizing example, not this project's measured pod count. It still needs validation for shared databases, skew, zone failure, rollout surge, and autoscaling delay.
+
+## What would you say about performance improvements?
+
+I describe the workload and the removed work before quoting speed. Replacing eight inventory HTTP calls with one batch call removes seven calls, an 87.5% reduction in that call count. It does not establish an 87.5% reduction in checkout time because payment and database work remain. At eight calls per order and 50 orders/s, the arrival rate is 400 calls/s; at 100ms mean duration, average in-flight work is approximately 40 calls, not 400.
+
+---
+
+# Page 34 — Reliability Tests and Interview Preparation Walkthrough
+
+## What the interviewer may ask
+
+“How do you know this works?” “What did you test beyond the happy path?” “What is your next engineering priority?”
+
+## What I say
+
+I match the test to the risk. JUnit 5 is the test framework, Mockito isolates business dependencies, and Testcontainers runs real infrastructure for behavior that mocks cannot prove. I test state-transition rules with fast unit tests, but use actual PostgreSQL for competing stock updates and unique constraints. A mock repository returning success cannot demonstrate that two transactions will not oversell.
+
+The order journey also needs integration tests for interruption between steps. I want to know what happens after the database commits but before Kafka acknowledges, after the provider charges but before its response arrives, and after a consumer commits its business change but before its offset advances. Those are the boundaries where duplicate effects or lost progress appear.
+
+## What are the acceptance criteria?
+
+| Scenario | Setup | Expected invariant |
+|---|---|---|
+| Stock contention | 100 one-unit requests against stock 10 | No more than 10 successful reservations; stock never negative. With all requests processed and no infrastructure failures, exactly 10 succeed. |
+| Duplicate checkout | 20 concurrent requests with the same key and body | One logical order; responses resolve to the same identity. |
+| Conflicting key reuse | Same key, different amount or item set | Reject conflict; do not silently return a result for a different request. |
+| Duplicate payment | 20 retries including a lost provider response | One provider charge under the provider's idempotency contract. |
+| Consumer replay | Deliver one event 10 times | One local business effect; duplicate handling succeeds safely. |
+| Cancel/payment race | Synchronize both operations with a barrier | Valid final state; a successful charge is either retained by policy or durably awaiting/reflected in a refund. |
+| Partial reservation failure | One line lacks stock in a batch | No lines remain newly reserved after rollback. |
+| Kafka outage | Commit business state while publisher cannot send | Outbox retains work and eventually delivers after recovery. |
+| Redis round trip | Serialize and read nonempty and empty lists | Correct typed results, not a masked 403 or corrupt cache entry. |
+| Worker termination | Stop after a remote effect, before local completion | Recovery reuses operation identity; no double reservation, charge, or release. |
+
+These are proposed tests for the extended workflow, not reported successful executions. I would coordinate concurrent test starts and wait for outcomes with a deadline rather than relying on arbitrary sleeps. A stub payment provider should record calls and enforce idempotency so the test checks external effects, not only the service's return value.
+
+## What does Testcontainers not prove?
+
+A single local container does not establish multi-zone failover, broker replication safety, or production throughput. It gives a realistic database or broker implementation for focused tests. Load and failover tests need a representative topology, data volume, controlled fault injection, and a report recording the commit, configuration, duration, latency, throughput, and errors.
+
+## How do the tests cover search, AI, and deployment responsibilities?
+
+Search tests check keyword relevance, category and currency-aware price filtering, updates, deletion, pagination, and delayed index visibility. AI tests check multi-turn constraints, duplicate chunks, real product IDs, unavailable tools, and attempts to inject instructions through catalog text. Deterministic tool-contract tests can use controlled responses, while separate evaluation runs measure actual retrieval and model behavior on a fixed dataset.
+
+Deployment verification checks that unready instances receive no normal Service traffic, requests survive a rolling release within the declared policy, and persistent data remains after instance replacement. Backup recovery must be exercised separately. These tests cover the newly added resume responsibilities without pretending a Mockito test proves cloud failover or that a single successful chat proves recommendation quality.
+
+## How should I prepare an answer rather than memorize a definition?
+
+For each topic, start with the business problem, explain the mechanism in plain English, locate its transaction or failure boundary, and finish with a test or a clearly calculated number. For example: “Idempotency means retrying the same payment does not create another charge. I associate retries with one durable attempt and reuse the provider's request ID. If the response is lost, I reconcile that attempt instead of creating a new one. My acceptance test sends the request 20 times and checks for one charge.”
+
+For the overall story, walk through one order from submission to stock reservation, payment, shipping, and completion, then repeat the story with payment timeout and cancellation. Explain who owns each fact and what remains durable after a crash. This connects Spring transactions, PostgreSQL, Kafka, Redis, security, monitoring, and deployment into one system rather than a list of technologies.
+
+## What should I avoid claiming?
+
+Do not convert a suggested architecture into an observed deployment or turn arithmetic into measured latency. The useful distinction is between an implemented behavior, a tested result, and a design you can defend. The next-stage features in these pages are preparation material; building and validating them later will supply the concrete evidence for stronger experience-based answers.
+
+---
+
+# Page 35 — Elasticsearch Product Keyword Search
+
+## What the interviewer may ask
+
+“How does product search work?” “Why Elasticsearch if you have PostgreSQL and Cassandra?” “How do price filters stay correct?”
+
+## What I say
+
+Elasticsearch supports the search-box experience: matching words in product names and descriptions, ranking useful matches, and narrowing the results by category and price. PostgreSQL remains the product source of truth, while the search index is a rebuildable copy organized for discovery. Cassandra serves known catalog query patterns; it is not a substitute for relevance-ranked full-text search.
+
+For example, a customer searches for a waterproof backpack under $100. The search request combines text matching with category and numeric price filters. It returns product IDs and display information, and the application checks current catalog data where needed. Checkout independently validates the price and available stock; appearing in search does not reserve the product or guarantee its final price.
+
+## What does the indexed product contain?
+
+I use one logical document per item with itemId, sellerId, name, description, category, display price, currency, availability status, and source version. Names and descriptions use analyzed text fields for full-text matching; IDs and exact category values use keyword fields; price uses a deliberate numeric representation. Money filtering must specify currency rather than comparing unrelated currency amounts.
+
+An analyzer turns text into searchable terms. A keyword field keeps a value suitable for exact matching, filters, sorting, or aggregation. I can give name matches more weight than description matches, but relevance tuning needs representative queries rather than arbitrary boosts. Typo tolerance and synonyms are additional choices with precision and latency costs, not features to enable without testing.
+
+## How does a product update reach search?
+
+Item Service commits the authoritative product change and outbox record, then a search consumer updates the document using itemId and an appropriate version guard. Stable IDs make updates replace the same logical product; deletion handling must also prevent old events from recreating a removed listing. Publisher lag and failed indexing events are visible operational work, not silent exceptions.
+
+An indexed update may not immediately be searchable because Elasticsearch exposes changes through refresh. Therefore end-to-end freshness includes both event delivery and search visibility. I do not force a refresh after every write just to hide that distinction, since freshness and indexing cost need a deliberate balance. See [Elastic's near-real-time search explanation](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search).
+
+## How do you avoid stale results and excessive service calls?
+
+A search page can retrieve current catalog details in a batch instead of making one HTTP call for every hit. Unavailable or removed products are filtered out, and the API handles a resulting shorter page explicitly rather than claiming an exact count it cannot provide. A final checkout check protects money and stock even if a display price briefly lags.
+
+For pagination, I limit page size and avoid unrestricted deep offsets; a cursor-based strategy with stable sorting and, when needed, a point-in-time view is more suitable for deep result navigation. Sorting, filters, and cursor state must stay consistent across pages. Broad queries and expensive aggregations also need limits.
+
+## What happens if search is down or the index needs rebuilding?
+
+I can offer bounded category browsing or an honest search-unavailable response. I do not automatically replace every failed query with an unrestricted relational wildcard scan. To rebuild, I populate a new index from authoritative data, catch up changes that occurred during the scan, validate results, and switch the read alias. The old index remains available for a controlled rollback until the new one is verified.
+
+## How would you measure improvement?
+
+I measure search p95/p99, error rate, index freshness, and relevance on a labeled query set. For example, 80 successful top-five matches out of 100 queries is an 80% success rate for that specific test definition, not an observed project result. Request speed and relevant results are separate requirements; a fast search returning unrelated products is not a successful optimization.
+
+## Why also use Milvus?
+
+This architecture assigns Elasticsearch keyword/filter search and Milvus semantic retrieval for the assistant. Both products have overlapping capabilities, so two engines are a choice with extra operational cost, not a universal requirement. I would compare relevance, filtering, latency, and maintenance before claiming both are necessary. Page 36 explains the conversational path.
+
+---
+
+# Page 36 — AI Shopping Assistant, Embeddings, Milvus, and Agent Tools
+
+## What the interviewer may ask
+
+“What does the AI feature actually do?” “What are embeddings?” “Why chunk descriptions?” “How do you prevent invented recommendations?”
+
+## What I say
+
+The shopping assistant lets a customer describe a need and refine it through conversation. A user might ask for a lightweight hiking backpack under $100 and then add that it should be waterproof. The assistant searches the catalog with the updated requirements and explains relevant products using retrieved information, instead of expecting the user to know exact product names.
+
+An embedding is a numerical representation of text used to compare meaning. The ingestion process converts product text into vectors and stores them in Milvus with product identifiers and metadata. At query time, compatible query embeddings retrieve related content. Milvus performs retrieval; the language model interprets the request and writes the explanation. This is content-based conversational discovery, not automatically a recommendation model trained on purchase history. [Milvus's quickstart](https://milvus.io/docs/quickstart.md) demonstrates generating document and query embeddings for vector search.
+
+## How do products enter Milvus?
+
+I prepare searchable text from product names, descriptions, categories, and useful attributes. Long descriptions are split at meaningful boundaries, while a short description can remain one chunk. Every record retains itemId, chunkId, source version, embedding-model version, and the text or a reference to it. The vector dimension must match the configured model and collection schema.
+
+Splitting is useful when long text would exceed model limits or dilute a relevant section. It is not useful to split every sentence regardless of meaning: separating “water resistant” from “not suitable for heavy rain” can damage recommendations. Multiple retrieved chunks are grouped by itemId so the displayed list does not repeat one product several times.
+
+## What happens during a conversation?
+
+The assistant maintains user-scoped conversation context and turns the current request into search text plus explicit constraints. It invokes a limited search tool, retrieves candidate product IDs, and invokes a product-details tool to obtain current status and price. The response names real products and explains which verified attributes satisfy the request. Follow-up questions modify the existing constraints rather than blindly repeating the original search.
+
+For “under $100,” vector similarity is insufficient: a numeric constraint or authoritative-data check enforces the budget. If the user says “lighter,” the system needs actual weight information or asks for clarification; it must not invent missing measurements. Conversation memory is not authorization to read another customer's orders or preferences.
+
+## What makes this an agent, rather than just a prompt?
+
+The agent can select among predefined tools such as searchProducts and getProductDetails, inspect their outputs, and decide whether another read or a clarification is needed. The application validates tool arguments and permissions and caps execution time, tool calls, and result size. The agent does not receive unrestricted database access, and this recommendation feature does not need permission to purchase or refund anything.
+
+Retrieved descriptions are untrusted data, even if they contain instructions to ignore rules or call a tool. I keep tool authorization in application code and require responses to be grounded in catalog results. Tool errors are surfaced as unavailable information, not replaced by fabricated successful results.
+
+## How do you keep vectors current and handle failures?
+
+Product changes trigger indexing work with version checks or serialized per-item processing appropriate to the storage contract. Deleted and disabled products are removed or excluded, and current catalog validation provides another guard against stale suggestions. Changing embedding models may require a new collection and re-embedding; incompatible query and document representations must not be mixed.
+
+If Milvus or the embedding provider fails, the application can fall back to keyword search. If text generation fails after retrieval succeeds, it can show real product cards without an AI explanation. These fallbacks preserve honest discovery without affecting checkout correctness. Queue age, failed indexing work, tool latency, and model cost are separate signals to monitor.
+
+## How do you size and evaluate it?
+
+As a sizing example, 100,000 products with three chunks each create 300,000 vectors. At 768 float32 values, raw vector payload is `300,000 × 768 × 4 = 921,600,000 bytes`, approximately 0.92 GB decimal, before metadata, indexes, replicas, and runtime overhead. These are illustrative inputs, not the selected model or measured storage footprint.
+
+I evaluate product relevance, hard-filter compliance, unsupported claims, multi-turn behavior, latency, and cost on a fixed set of shopping tasks. Conversion uplift needs a separate controlled business experiment. A faster embedding call does not prove more useful recommendations, and a vector database does not by itself prevent hallucination.
+
+---
+
+# Page 37 — AWS Networking, Permissions, Storage, and Recovery
+
+## What the interviewer may ask
+
+“What exactly did you deploy to AWS?” “How can services reach the database?” “What survives a container restart?”
+
+## What I say
+
+The AWS responsibility covers the environment around the application: compute, networking, permissions, storage, and recovery. It is separate from writing an API or a Dockerfile. I need to explain where customer traffic enters, how backend services reach dependencies, which identity each workload uses, and how the platform recovers when an instance or dependency fails.
+
+For interview architecture discussion, a possible mapping uses EKS for Kubernetes, ECR for images, RDS for PostgreSQL, and S3 for product images. These are options, not a record of selected or deployed services. Kafka, Redis, Cassandra, Elasticsearch, and Milvus each require an explicit managed-versus-self-hosted decision with compatibility, cost, persistence, and operational ownership considered. Running the platform on AWS does not mean every dependency must run inside Kubernetes.
+
+## How do you explain networking without listing service names?
+
+A VPC defines the network boundary, and subnets place resources in appropriate network locations and availability zones. An HTTPS entry point accepts customer requests, while application and database endpoints receive only the access they need. A private application still needs an approved path to external payment or model providers; private does not mean disconnected from all outbound traffic.
+
+Security groups control allowed network traffic. IAM controls what a workload identity is authorized to do through AWS APIs. Both may matter, but opening a port does not grant permission to read an S3 object, and granting an IAM permission does not fix a blocked database route. Database authentication is another layer, not something automatically replaced by either control.
+
+## How are credentials and persistent data handled?
+
+I keep credentials out of Git, images, and logs, use scoped workload identities where supported, and manage application secrets through a deliberate delivery and rotation process. Workloads should not share one administrator credential. EKS still requires customer-side workload security and configuration; the managed control plane is not the whole application security model. See [AWS's EKS security guidance](https://docs.aws.amazon.com/eks/latest/best-practices/security.html).
+
+Orders and payment records must survive instance replacement. A managed database or appropriately persistent stateful deployment holds that data, while backups and restore procedures cover losses that replication alone does not. Product images use durable object storage rather than a container's local upload folder. Search and vector indexes are rebuildable, but rebuilding time, source data, and ongoing updates still require planning.
+
+## What about Elasticsearch, Cassandra, and Milvus on AWS?
+
+An Elasticsearch deployment and Amazon OpenSearch Service are not interchangeable names; choosing the latter requires checking the actual product, client compatibility, and feature needs. A managed Cassandra-compatible service likewise requires checking supported queries and behavior rather than assuming it is identical to the current database. Milvus deployment needs its own version-appropriate storage and supporting components or a managed service contract.
+
+For each dependency I record the source of truth, backup/rebuild procedure, network access, credentials, resource capacity, and recovery owner. Saying “supporting infrastructure” on the resume should lead to this concrete inventory, not an assumption that AWS configures all of it automatically.
+
+## How do you deploy and prove recovery?
+
+I build and test an immutable image, publish it to the registry, supply environment configuration, apply compatible migrations, and release application instances. I verify real journeys such as product search and checkout alongside readiness, errors, and database connectivity. Page 38 covers the Kubernetes portion of that release.
+
+Recovery objectives distinguish how much data loss is acceptable from how long restoration may take. I test a restore and confirm business records and pending events, instead of reporting only that a backup job succeeded. Multi-zone operation, retention, encryption, budget alerts, and resource cleanup are deliberate environment decisions; this document does not invent actual region, instance sizes, monthly cost, or achieved recovery times.
+
+---
+
+# Page 38 — Docker and Kubernetes Release Operations
+
+## What the interviewer may ask
+
+“What is in your Docker image?” “What do health checks do?” “How do resource limits and rolling updates work?”
+
+## What I say
+
+Docker packages a service and its runtime into a repeatable image. Kubernetes runs instances of that image and manages their placement, service access, and replacement. In the shopping platform, that lets an Order Service release be managed separately from an Item Service release, while their API and event contracts remain compatible.
+
+A Deployment describes desired application replicas and rollout behavior, a Pod is the runtime unit, and a Service provides a stable access point to eligible instances. Application configuration is supplied separately from the image. I use a specific image version or digest so I can identify and roll back the exact release, rather than relying on a mutable latest tag.
+
+## How do startup, readiness, and liveness probes differ?
+
+A startup probe allows initialization to finish before the other checks take over. Readiness determines whether an instance should receive normal Service traffic; failing it does not by itself restart the container. Liveness detects a condition where restarting is appropriate, after the configured failure threshold. These different effects are defined in the [Kubernetes probe documentation](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-probes/).
+
+For Spring Boot, I can connect probes to suitably exposed Actuator health groups. A healthy process is not proof that every order is completing, and a shared database outage should not automatically cause all application containers to fail liveness. Dependency-sensitive readiness also needs care because marking every replica unready can remove all capacity without fixing that dependency.
+
+## What do requests and limits mean for Java?
+
+Resource requests help Kubernetes schedule workloads and allocate capacity expectations. CPU limits can lead to throttling, while memory exhaustion can terminate the process. The JVM heap is only part of memory use: direct buffers, thread stacks, metaspace, and other native allocations also need room. Setting heap equal to the full container memory limit leaves no safe space for those allocations.
+
+I tune replicas and resource settings with request latency, CPU, memory, GC, and connection-pool pressure. More replicas also create more database connections, so scaling applications without checking PostgreSQL limits can make the system slower. A bounded thread pool inside each Pod is not a global limit across all replicas.
+
+## How do you perform a rolling release?
+
+The rollout starts replacement instances, waits for readiness, and reduces old instances according to the permitted surge and unavailable counts. There must be enough capacity to satisfy those settings. Old instances stop accepting new traffic and receive time to finish or safely hand off work; queue consumers must not acknowledge work they have not completed.
+
+New and old versions coexist, so migrations add compatible structures first and remove old ones later. Reverting an image does not reverse destructive schema changes, shipped orders, or provider charges. I judge rollout health using business outcomes and error/latency trends, not only the Pod status. A rolling strategy supports availability but cannot promise zero downtime under every failure.
+
+## How does this relate to Eureka and cloud storage?
+
+Kubernetes Service DNS can provide discovery inside the cluster. Keeping Eureka requires a reason such as a mixed VM/container environment; two discovery mechanisms should not remain by accident. Dockerfile settings do not define the cloud network or service discovery policy.
+
+An application Deployment is suitable for stateless request handling, not a complete database durability strategy. Persistent dependencies require their own managed service or stateful configuration, backups, and recovery testing. Page 37 explains that AWS layer; neither Kubernetes restart nor an attached volume alone guarantees recoverable business data.
+
+---
+
+<a id="page-39"></a>
+# Page 39 — CI/CD: From Pull Request to AWS/EKS Release
+
+## What the interviewer may ask
+
+“Did you do deployment?” “What happens after you push code?” “When do you change configuration?” “How do you roll back a database release?”
+
+## What I say
+
+CI means we automatically check a change before it is merged. CD takes a tested version through deployment environments. For this shopping platform, the reference workflow uses GitHub Actions for checks and image builds, Amazon ECR for images, and Helm to deploy to EKS. Production has an approval gate, so this is continuous delivery rather than unconditional automatic deployment.
+
+The important rule is to build once and promote the same image digest. I test the image in staging, prepare compatible configuration and database changes, and then release that exact version to production. A successful pipeline means more than a green Pod: we also check authentication, catalog reads, order acceptance, errors, latency, and background processing.
+
+## What happens at each stage?
+
+| Stage | Shopping-project work | What stops promotion? |
+|---|---|---|
+| Pull request | Compile Java 17 modules, run JUnit/Mockito, inspect dependencies and secrets | Compilation, test, policy, or review failure |
+| Integration checks | Testcontainers for PostgreSQL/Redis/Kafka; verify contracts and migrations | Duplicate effects, rollback failure, incompatible contracts |
+| Merge and package | Build an immutable image, scan it, record commit/digest and dependency inventory | Image scan or reproducibility problem |
+| Staging | Deploy the same digest with staging configuration and a payment sandbox | Failed smoke tests or incompatible migration |
+| Production approval | Review release diff, configuration, migration and recovery plan | Missing approval, unsafe schema or missing secret |
+| Rollout and observation | Helm release, readiness checks, smoke tests and release metrics | Error/latency regression or stalled business work |
+
+Changed-service detection can reduce work, but a shared DTO or Common module change also tests affected consumers. Untrusted pull requests get no production credentials. Actions are pinned to reviewed revisions, and build and deployment roles have separate permissions. GitHub OIDC supplies short-lived AWS credentials rather than storing a permanent AWS access key; the role trust is restricted to the intended repository and branch/environment. See [GitHub's AWS OIDC guidance](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
+
+## How do configuration, secrets, and migrations fit in?
+
+Service URLs, timeouts and feature flags are versioned configuration delivered before the version that requires them receives traffic. Secrets come through a controlled secret-store integration, not Git, Docker build arguments or console output. A feature flag that activates behavior can remain off until deployment is healthy. A central configuration platform does not eliminate configuration review, validation or rollback.
+
+A controlled migration job applies an expand migration, such as adding a nullable column, before new code requires it. Old and new application versions must work together during rolling replacement. Backfill is bounded and observable; removing the old column happens in a later release after old readers are gone. I do not have every Pod independently run an uncoordinated destructive migration at startup.
+
+If the application release fails, I can redeploy the previous digest only if the schema and event contracts are still compatible. I normally leave the additive schema in place. Rolling back an image cannot undo a payment or safely recreate a dropped column; a bad data migration requires a separate repair or recovery decision.
+
+## Numbers, release gates, and failure handling
+
+An illustrative pipeline budget is three minutes for build/unit checks, six for integration tests and four for image work: 13 minutes if sequential. Independent stages may overlap, but dependent stages cannot. A staging gate and production observation add time. I report actual pipeline duration and failure rate before claiming a speed improvement.
+
+For a four-replica application, `maxSurge: 1` and `maxUnavailable: 0` allow an extra Pod and avoid intentionally reducing available replicas during replacement. This needs spare capacity and is not a guarantee against unrelated outages. Start with a ten-minute observation window; a candidate release gate might stop promotion if 5xx exceeds 1% for five minutes or p99 exceeds twice the matched pre-release baseline, subject to a minimum sample count. Payment correctness failures stop promotion regardless of a healthy average latency.
+
+A runner disconnecting does not prove deployment failed or did not happen. Inspect the actual Helm release, image digests and migration status before retrying; serialize deployments to the same environment. A staging smoke test uses test identities and sandbox money, not an unintended real charge. If production is unhealthy, stop promotion, assess safe rollback, and reconcile unfinished orders.
+
+## What is your personal contribution, and why does it help?
+
+Explain whether you owned workflow files, tests, service charts, migration scripts or release verification; do not confuse maintaining the EKS platform with deploying an application to it. The benefit is a repeatable, auditable release with fewer manual inconsistencies, not an automatic increase in application QPS. Track lead time, deployment frequency, failed releases and recovery time to measure it.
+
+---
+
+<a id="page-40"></a>
+# Page 40 — Spring Security: Login, JWT Filters, and Authorization
+
+## What I say
+
+Spring Security is the framework that verifies identity and enforces access rules around our endpoints and business methods. JWT is one credential format used by that framework, not the entire security solution. In this architecture Auth issues tokens, the Gateway verifies incoming identity, and each business service checks both permissions and ownership.
+
+For example, being a seller allows access to a product-management operation, but it does not allow editing another seller's product. The verified token subject supplies userId; the application does not trust a userId copied from the request body. Order reads and cancellation have the equivalent buyer-ownership rule.
+
+## What happens during login versus an ordinary API call?
+
+During login, Auth passes credentials to an AuthenticationManager/provider arrangement. A username/password provider loads the credential record through UserDetailsService and checks it with PasswordEncoder, such as BCrypt. After authentication succeeds, separate token-issuance code signs an access token and records a refresh session. Adding resource-server configuration does not create a login endpoint, sign JWTs, or implement refresh rotation for us.
+
+During a normal Servlet API request, the bearer filter extracts the token, the authentication provider uses JwtDecoder to validate it, and a converter supplies authorities. Spring then establishes the SecurityContext before authorization. The WebFlux Gateway uses SecurityWebFilterChain, ServerHttpSecurity and ReactiveJwtDecoder instead of the Servlet chain. The official [Servlet JWT flow](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html) and [reactive equivalent](https://docs.spring.io/spring-security/reference/reactive/oauth2/resource-server/jwt.html) describe these different execution paths.
+
+## What exactly do you configure?
+
+| Layer | Configuration responsibility | Project rule |
+|---|---|---|
+| Login | Credential provider, PasswordEncoder, rate controls | Generic invalid-credential response; do not expose password hashes |
+| Token validation | Trusted keys/algorithm, signature, exp/nbf, issuer and audience validators | Reject a validly signed token meant for a different API |
+| Role conversion | Explicitly map `roles: ["SELLER"]` to `ROLE_SELLER` | Do not assume custom roles automatically become authorities |
+| Servlet service | SecurityFilterChain, HttpSecurity and stateless bearer authentication | Restrict routes; enable method security where used |
+| Method/business rule | `@PreAuthorize` for role checks plus trusted-identity ownership checks | A role check does not replace `sellerId == principalId` |
+| Gateway | Reactive security chain and controlled routing | Never trust a client-supplied identity header |
+
+For a Servlet service, `@EnableMethodSecurity` enables method rules such as `@PreAuthorize("hasRole('SELLER')")`; ownership still belongs in the business operation. Resource-server support is commonly supplied through Boot's OAuth2 resource-server starter. Custom authority mapping and audience validation must match the chosen Boot/Security version; adding `issuer-uri` alone is not a universal guarantee that the intended audience is checked.
+
+## Token lifecycle and failure cases
+
+The example uses a 15-minute access token and a refresh session with a seven-day absolute lifetime. Refresh rotates the random token, stores only its hash and session metadata, and never silently extends beyond that absolute deadline. Reuse detection and concurrent browser refresh require an explicit policy. Logout revokes the refresh session; without an online revocation check, a valid access token may still work until expiry.
+
+Auth signs with a protected private key, while verifiers obtain public keys from a trusted JWKS endpoint. Publish the new public key before signing with it, use `kid` to identify keys, and retain the old verification key for the remaining access-token lifetime plus allowed clock skew. Cached known keys may permit validation while Auth is unavailable; an unknown key or failed validation must not become an authentication bypass. Key-cache refresh and startup behavior depend on version and configuration.
+
+For browser APIs using Authorization headers, a stateless policy means no session-based authentication state is required, not that refresh sessions never exist in a database. Cookie-based refresh endpoints need a CSRF defense and deliberate SameSite/Origin policy; do not disable CSRF everywhere just because the application uses JWT. CORS controls browser cross-origin access, not authorization. Internal callers need their own trusted service identity and least-privilege rules, not unrestricted access merely because they are inside Kubernetes.
+
+## How do you prove this works, and what improves?
+
+Test missing/expired/tampered tokens, wrong issuer/audience, buyer attempts to create products, seller attempts to edit someone else's product, cross-user order reads and refresh reuse. Missing or invalid authentication normally produces 401; authenticated but forbidden access normally produces 403, or a deliberate 404 for resource privacy. Exercise both Gateway and direct service entry points.
+
+Tests using a mocked authenticated JWT can prove authorization rules but cannot prove signature validation. Include signed test tokens through the actual decoder, using isolated test keys, and verify a rotated-key scenario. Do not log the tokens when these tests fail.
+
+At a hypothetical 1,000 protected requests/s, local validation can avoid up to 1,000 remote Auth checks/s compared with remote verification on every call. It still consumes CPU, and revocation checks change the calculation; this is avoided network work, not a measured latency reduction. Authentication and authorization primarily protect correctness and confidentiality.
+
+---
+
+<a id="page-41"></a>
+# Page 41 — Logging: SLF4J, Logback, OpenTelemetry, and Splunk
+
+## What I say
+
+I separate generating logs from collecting and investigating them. Java code logs through SLF4J, Logback formats structured JSON, and services write to container standard output. A collector attaches Kubernetes metadata and forwards the records to Splunk. The business method does not synchronously call Splunk for every order.
+
+I include traceId for a particular execution path and orderId, paymentAttemptId or eventId when the operation has those identifiers. That lets me search across HTTP calls, workers and message consumers. A traceId is not an order's permanent identity: retries and later callbacks can have different traces for the same order.
+
+## How do the logs reach Splunk?
+
+The reference path is SLF4J → Logback JSON → container stdout → node log files → a Kubernetes OpenTelemetry Collector agent → HTTPS HEC → Splunk index/search. Each step has a different responsibility: the application describes the business action, the collector batches and enriches, and Splunk supports investigation. Splunk documents its [Kubernetes collector and HEC integration](https://help.splunk.com/en/data-management/splunk-validated-architectures/getting-data-in-forwarding-and-preprocessing/splunk-opentelemetry-collector-for-kubernetes).
+
+The collector's HEC token is scoped and delivered as a secret, not embedded in application logs. A possible index is `shopping_prod`, with a JSON sourcetype and restricted search access. Configure JSON field extraction so service, operation and numeric durationMs are searchable. Set retention and access separately for operational logs and sensitive audit records.
+
+```json
+{"level":"WARN","service":"payment-service","environment":"production","version":"release-example","traceId":"trace-example","orderId":"order-123","paymentAttemptId":"pay-456","operation":"authorizePayment","outcome":"UNKNOWN","durationMs":2000,"errorCode":"PROVIDER_TIMEOUT"}
+```
+
+This record says that a call timed out, not that the provider rejected payment. Real records also include a consistent timestamp, and the collector adds Pod and namespace metadata. Error stacks belong on the useful error event, not duplicated at every layer; serialize untrusted text safely and avoid raw request/response bodies, passwords, tokens and payment secrets.
+
+## How do levels and trace propagation work?
+
+INFO records useful milestones, WARN records recoverable trouble such as an unknown payment result, and ERROR records failures requiring investigation. DEBUG is short-lived and narrowly enabled during diagnosis. Expected validation failures should not flood ERROR. Parameterized logging avoids unnecessary string construction, but logging full objects can still be expensive and unsafe.
+
+HTTP clients propagate trace context, and Kafka headers connect event processing to its origin. MVC MDC is typically thread-local, so executor tasks must copy and then clear the required context. Reactive code needs Reactor-aware context propagation rather than assuming one request owns one thread. Instrumentation handles common cases, but custom executors and callbacks need tests for missing or leaked context.
+
+## What Splunk queries would you use?
+
+Start with a known order and a narrow time range. These SPL examples assume the JSON fields and index above are configured; they are investigation examples, not executed queries.
+
+```spl
+index=shopping_prod earliest=-30m orderId="order-123"
+| sort 0 _time
+| table _time service operation outcome paymentAttemptId eventId traceId errorCode
+```
+
+This shows how the order progressed across services. Follow the paymentAttemptId and provider status if the result is unknown; do not ask the customer to pay again just because a success log is missing.
+
+```spl
+index=shopping_prod earliest=-30m service="payment-service" operation="authorizePayment"
+| bin _time span=5m
+| stats count AS calls count(eval(outcome="UNKNOWN")) AS unresolved
+        perc95(durationMs) AS p95Ms perc99(durationMs) AS p99Ms BY _time
+```
+
+This calculates the distribution of logged payment attempts, not the latency of all customer checkouts. Sampling, missing records and repeated attempts affect interpretation. Prometheus/Micrometer metrics remain the primary service-rate and latency source; logs explain individual failures, while traces explain the path.
+
+## Volume, retention and Splunk failure
+
+Using 200 average incoming requests/s, four application records per request across the call chain and 600 bytes per record gives `200 × 4 × 600 × 86,400 = 41.472GB/day` before compression and indexing. At 1,000 RPS the corresponding ingress is 2.4MB/s. These estimates exclude workers, Kafka events and stack traces; never silently treat the estimate as the whole logging bill.
+
+A 14-day searchable application-log budget is about 580.6GB raw at that base rate, with archive policy chosen separately. Routine event consumers can use sampled success logs and aggregate metrics while preserving important errors and durable audit facts. Do not emit four verbose log lines for each of 20M daily browse events without a separate budget.
+
+When Splunk is unavailable, collectors retry with bounded buffering and backoff. A 10GB aggregate buffer at 2.4MB/s holds about 69 minutes before overhead; per-node skew can exhaust a node sooner. Monitor queue age, dropped records and disk pressure. Container log rotation, buffer overflow and node loss can still lose logs; asynchronous logging does not guarantee delivery. Define whether an exhausted application appender blocks or drops and avoid turning a logging outage into a checkout outage.
+
+Money and order state remain in durable business storage. Operational logs support diagnosis but are not a payment ledger. My incident walkthrough is to find the affected release/time range, trace the order, verify provider and database facts, locate the stalled event or callback, recover through idempotent commands, and confirm backlog and business outcomes recover.
 
 ---
 

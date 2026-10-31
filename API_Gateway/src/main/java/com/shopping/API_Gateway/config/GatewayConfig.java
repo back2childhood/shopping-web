@@ -40,6 +40,8 @@ public class GatewayConfig {
                 .build();
     }
 
+    // kafka / spring provider
+
     private static void configureCircuitBreaker(
             SpringCloudCircuitBreakerFilterFactory.Config config, String name) {
         config.setName(name)

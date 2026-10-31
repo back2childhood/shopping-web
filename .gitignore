@@ -36,3 +36,9 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+# Local credentials and editor session state
+.env
+.env.*
+!.env.example
+.idea/claudeCodeTabState.xml

@@ -1,6 +1,8 @@
 package com.shopping.ItemService.service.impl;
 
 import com.shopping.ItemService.dao.InventoryRepository;
+import com.shopping.ItemService.config.RedisConfig;
+import com.shopping.ItemService.entity.ItemProjection;
 import com.shopping.ItemService.dao.ItemProjectionRepository;
 import com.shopping.ItemService.dao.ItemRepository;
 import com.shopping.ItemService.entity.Inventory;
@@ -20,6 +22,8 @@ import org.springframework.web.server.ResponseStatusException;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.List;
+import java.nio.ByteBuffer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -89,6 +93,33 @@ class ItemServiceImplTest {
 
     private ItemRequestDto request() {
         return new ItemRequestDto("Keyboard", "Mechanical keyboard", new BigDecimal("99.90"), "USD", 10);
+    }
+
+    @Test
+    void cachedListsRoundTripWithConfiguredRedisSerializer() {
+        Item item = item(6L);
+        when(inventoryRepository.findById(item.getId()))
+                .thenReturn(Optional.of(new Inventory(item.getId(), 10, 0L)));
+        when(itemProjectionRepository.findAll()).thenReturn(List.of());
+        when(itemRepository.count()).thenReturn(1L);
+        when(itemRepository.findAll()).thenReturn(List.of(item));
+        assertCacheRoundTrip(itemService.getAllItems());
+
+        when(itemProjectionRepository.findAll()).thenReturn(List.of(ItemProjection.builder()
+                .id(item.getId()).userId(6L).name(item.getName()).description(item.getDescription())
+                .price(item.getPrice()).currency(item.getCurrency()).build()));
+        assertCacheRoundTrip(itemService.getAllItems());
+
+        when(itemRepository.findAllByUserIdOrderByCreatedAtDesc(6L)).thenReturn(List.of(item));
+        assertCacheRoundTrip(itemService.getItemsByUserId(6L));
+        when(itemRepository.findAllByUserIdOrderByCreatedAtDesc(6L)).thenReturn(List.of());
+        assertCacheRoundTrip(itemService.getItemsByUserId(6L));
+    }
+
+    private void assertCacheRoundTrip(List<ItemResponseDto> items) {
+        var serializer = new RedisConfig().cacheConfiguration().getValueSerializationPair();
+        ByteBuffer bytes = serializer.write(items);
+        assertThat(serializer.read(bytes)).isEqualTo(items);
     }
 
     private Item item(Long userId) {

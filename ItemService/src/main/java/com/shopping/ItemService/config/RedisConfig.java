@@ -35,7 +35,7 @@ public class RedisConfig {
         return RedisCacheConfiguration.defaultCacheConfig()
                 .entryTtl(Duration.ofMinutes(10))
                 .disableCachingNullValues()
-                .computePrefixWith(cacheName -> "item-service:v4:" + cacheName + "::")
+                .computePrefixWith(cacheName -> "item-service:v5:" + cacheName + "::")
                 .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(
                         new GenericJackson2JsonRedisSerializer(objectMapper)
                 ));

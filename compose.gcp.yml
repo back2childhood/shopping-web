@@ -1,0 +1,144 @@
+# Overlay only: use with compose.yml. Requires Docker Compose 2.24.4+.
+# All ingress stays on VM loopback until HTTPS/public access is configured.
+x-runtime: &runtime
+  restart: unless-stopped
+  stop_grace_period: 45s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-java-env: &java-env
+  JAVA_TOOL_OPTIONS: "-Xms128m -Xmx384m -XX:ActiveProcessorCount=2"
+
+services:
+  postgres:
+    <<: *runtime
+    ports: !reset []
+    mem_limit: 512m
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.gcp}
+
+  redis:
+    <<: *runtime
+    ports: !reset []
+    mem_limit: 192m
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+
+  kafka:
+    <<: *runtime
+    ports: !reset []
+    mem_limit: 1g
+    environment:
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+      KAFKA_LISTENERS: INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LOG_RETENTION_HOURS: 24
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list"]
+      start_period: 60s
+
+  cassandra:
+    <<: *runtime
+    ports: !reset []
+    mem_limit: 1536m
+    healthcheck:
+      start_period: 90s
+
+  cassandra-init:
+    mem_limit: 256m
+
+  eureka-server:
+    <<: *runtime
+    ports: !reset []
+    mem_limit: 512m
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:ActiveProcessorCount=2"
+
+  account-service:
+    <<: *runtime
+    ports: !reset []
+    mem_limit: 640m
+    environment:
+      <<: *java-env
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
+
+  auth-service:
+    <<: *runtime
+    ports: !reset []
+    mem_limit: 640m
+    environment:
+      <<: *java-env
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+
+  item-service:
+    <<: *runtime
+    ports: !reset []
+    mem_limit: 896m
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms128m -Xmx512m -XX:ActiveProcessorCount=2"
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN}
+
+  order-service:
+    <<: *runtime
+    ports: !reset []
+    mem_limit: 640m
+    environment:
+      <<: *java-env
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN}
+
+  api-gateway:
+    <<: *runtime
+    ports: !reset []
+    mem_limit: 640m
+    environment:
+      <<: *java-env
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+
+  frontend:
+    <<: *runtime
+    ports: !reset []
+    mem_limit: 512m
+    build:
+      args:
+        FRONTEND_TARGET: node
+        NEXT_PUBLIC_API_BASE_URL: ""
+    environment:
+      NODE_OPTIONS: --max-old-space-size=320
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  web:
+    <<: *runtime
+    image: nginx:stable-alpine
+    mem_limit: 64m
+    ports:
+      - "127.0.0.1:8088:80"
+    volumes:
+      - ./docker/gcp/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shopping-net

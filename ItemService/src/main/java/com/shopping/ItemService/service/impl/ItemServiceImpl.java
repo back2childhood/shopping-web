@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class ItemServiceImpl implements ItemService {
@@ -94,11 +95,11 @@ public class ItemServiceImpl implements ItemService {
         if (projections.isEmpty() && itemRepository.count() > 0) {
             return itemRepository.findAll().stream()
                     .map(item -> toResponse(item, inventoryQuantity(item.getId())))
-                    .toList();
+                    .collect(Collectors.toCollection(ArrayList::new));
         }
         return projections.stream()
                 .map(item -> toResponse(item, inventoryQuantity(item.getId())))
-                .toList();
+                .collect(Collectors.toCollection(ArrayList::new));
     }
 
     @Override
@@ -106,7 +107,7 @@ public class ItemServiceImpl implements ItemService {
     public List<ItemResponseDto> getItemsByUserId(Long userId) {
         return itemRepository.findAllByUserIdOrderByCreatedAtDesc(userId).stream()
                 .map(item -> toResponse(item, inventoryQuantity(item.getId())))
-                .toList();
+                .collect(Collectors.toCollection(ArrayList::new));
     }
 
     @Override
